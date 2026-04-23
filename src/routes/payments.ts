@@ -96,14 +96,80 @@ payments.post('/create-link', async (c) => {
   }
 });
 
-// POST /api/payments/webhook - Stripe webhook handler
+// ── Stripe HMAC-SHA256 signature verifier (Web Crypto API — no Node.js needed) ──
+async function verifyStripeSignature(
+  payload: string,
+  sigHeader: string | undefined,
+  secret: string
+): Promise<{ valid: boolean; error?: string }> {
+  if (!secret) return { valid: false, error: 'STRIPE_WEBHOOK_SECRET not configured' };
+  if (!sigHeader) return { valid: false, error: 'Missing stripe-signature header' };
+
+  // Parse t=timestamp,v1=signature pairs
+  const parts: Record<string, string> = {};
+  for (const part of sigHeader.split(',')) {
+    const [k, v] = part.split('=');
+    if (k && v) parts[k.trim()] = v.trim();
+  }
+
+  const timestamp = parts['t'];
+  const expectedSig = parts['v1'];
+  if (!timestamp || !expectedSig) {
+    return { valid: false, error: 'Malformed stripe-signature header' };
+  }
+
+  // Reject if timestamp is > 5 minutes old (replay attack protection)
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - parseInt(timestamp)) > 300) {
+    return { valid: false, error: 'Webhook timestamp too old — possible replay attack' };
+  }
+
+  // Compute HMAC-SHA256(secret, "timestamp.payload")
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const signed = await crypto.subtle.sign('HMAC', key, enc.encode(`${timestamp}.${payload}`));
+  const computedSig = Array.from(new Uint8Array(signed))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Constant-time comparison
+  if (computedSig.length !== expectedSig.length) {
+    return { valid: false, error: 'Signature mismatch' };
+  }
+  let diff = 0;
+  for (let i = 0; i < computedSig.length; i++) {
+    diff |= computedSig.charCodeAt(i) ^ expectedSig.charCodeAt(i);
+  }
+  return diff === 0 ? { valid: true } : { valid: false, error: 'Signature mismatch' };
+}
+
+// POST /api/payments/webhook - Stripe webhook handler (signature verified)
 payments.post('/webhook', async (c) => {
-  const { DB, STRIPE_WEBHOOK_SECRET, STRIPE_SECRET_KEY } = c.env;
+  const { DB, STRIPE_WEBHOOK_SECRET } = c.env;
   const body = await c.req.text();
   const signature = c.req.header('stripe-signature');
 
-  // In production, verify webhook signature
-  // For now, process the event
+  // ── SECURITY GATE: Reject if webhook secret not configured ────────────────
+  if (!STRIPE_WEBHOOK_SECRET) {
+    console.error('[WEBHOOK] STRIPE_WEBHOOK_SECRET not set — payments unsafe');
+    return c.json({
+      error: 'STRIPE WEBHOOK NOT CONFIGURED — PAYMENTS UNSAFE',
+      code: 'WEBHOOK_SECRET_MISSING'
+    }, 500);
+  }
+
+  // ── SIGNATURE VERIFICATION ─────────────────────────────────────────────────
+  const verification = await verifyStripeSignature(body, signature, STRIPE_WEBHOOK_SECRET);
+  if (!verification.valid) {
+    console.error('[WEBHOOK] Signature verification FAILED:', verification.error);
+    return c.json({
+      error: 'Webhook signature verification failed',
+      detail: verification.error,
+      code: 'INVALID_SIGNATURE'
+    }, 400);
+  }
+
   try {
     const event = JSON.parse(body) as {
       type: string;
