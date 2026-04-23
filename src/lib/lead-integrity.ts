@@ -1,12 +1,22 @@
 // ============================================================
-// LEAD INTEGRITY ENFORCEMENT ENGINE
-// Zero-tolerance for test/internal/fallback emails.
-// Every lead must be a verified external business contact.
+// LEAD INTEGRITY + ENVIRONMENT CONTROL ENGINE
+//
+// ENV = "TEST" | "PRODUCTION"  (default: PRODUCTION)
+//
+// TEST mode  → test emails ALLOWED, tagged lead_type="TEST"
+// PRODUCTION → test emails BLOCKED, NOT deleted, NOT globally removed
+//
+// Test emails are never destroyed — they are context-filtered.
 // ============================================================
 
-// ─── SECTION 1: PERMANENT BLOCKLIST ──────────────────────────────────────────
-export const INTERNAL_EMAIL_BLOCKLIST: Set<string> = new Set([
-  // Warm-up test accounts (HARD BLOCK — used for inbox placement testing only)
+// ─── SECTION 1: ENVIRONMENT DEFINITION ───────────────────────────────────────
+export type AppEnv = 'TEST' | 'PRODUCTION';
+export const DEFAULT_ENV: AppEnv = 'PRODUCTION';
+
+// ─── SECTION 2 + 3: TEST EMAIL REGISTRY ──────────────────────────────────────
+// These are PRESERVED for testing — not deleted, not globally blocked.
+// Behavior is determined by ENV at runtime.
+export const TEST_EMAIL_LIST: Set<string> = new Set([
   'kedelin261@gmail.com',
   'jkbarclay261@gmail.com',
   'mkbrown261@gmail.com',
@@ -14,7 +24,11 @@ export const INTERNAL_EMAIL_BLOCKLIST: Set<string> = new Set([
   'kceesq@gmail.com',
   'mnbrown261@gmail.com',
   'mbrown261@gmail.com',
-  // System / developer / own domain
+]);
+
+// Infrastructure emails — ALWAYS blocked regardless of ENV
+// (own domain, system addresses — never outreach targets)
+export const INFRA_EMAIL_BLOCKLIST: Set<string> = new Set([
   'alex@websitedemopro.org',
   'admin@websitedemopro.org',
   'noreply@websitedemopro.org',
@@ -22,13 +36,13 @@ export const INTERNAL_EMAIL_BLOCKLIST: Set<string> = new Set([
   'dmarc@websitedemopro.org',
 ]);
 
-// Any email on these domains is auto-blocked (our own infrastructure)
+// Own domains — always blocked (cannot send to ourselves)
 export const BLOCKED_DOMAINS: Set<string> = new Set([
   'websitedemopro.org',
   'leadgenpro.com',
 ]);
 
-// Personal domains that require business verification before allowing
+// Personal domains — require business verification
 export const PERSONAL_DOMAINS: Set<string> = new Set([
   'gmail.com',
   'yahoo.com',
@@ -41,15 +55,27 @@ export const PERSONAL_DOMAINS: Set<string> = new Set([
   'live.com',
 ]);
 
-// ─── INTERFACES ──────────────────────────────────────────────────────────────
+// Keep INTERNAL_EMAIL_BLOCKLIST as a union alias for backward compatibility
+// (infra + test — but behavior differs: test emails are env-filtered, not hard-blocked)
+export const INTERNAL_EMAIL_BLOCKLIST: Set<string> = new Set([
+  ...TEST_EMAIL_LIST,
+  ...INFRA_EMAIL_BLOCKLIST,
+]);
+
+// ─── SECTION 4: LEAD TAGGING ──────────────────────────────────────────────────
+export type LeadType = 'TEST' | 'REAL';
+
 export interface LeadCandidate {
   email: string;
   business_name: string;
   phone?: string;
   city?: string;
   industry?: string;
-  source?: string;           // 'google_maps' | 'yelp' | 'osm' | 'yellowpages' | etc.
+  source?: string;
   website_status?: 'NONE' | 'WEAK' | 'EXISTS';
+  // Section 4 tags — set by engine, not by caller
+  lead_type?: LeadType;
+  environment_used?: AppEnv;
 }
 
 export type ValidationStatus = 'ACCEPTED' | 'REJECTED';
@@ -59,13 +85,18 @@ export interface LeadAuditEntry {
   business_name: string;
   status: ValidationStatus;
   reason: string;
+  rejection_code?: string;
+  lead_type: LeadType;
+  environment_used: AppEnv;
   timestamp: string;
   checks_passed: string[];
   checks_failed: string[];
 }
 
 export interface IntegrityReport {
-  status: 'REAL_LEADS_ONLY' | 'DATA_INTEGRITY_FAILURE' | 'SCRAPER_INSUFFICIENT_DATA';
+  status: 'ENVIRONMENT_FILTER_ACTIVE' | 'DATA_INTEGRITY_FAILURE' | 'SCRAPER_INSUFFICIENT_DATA';
+  mode: AppEnv;
+  test_emails_blocked_in_production: boolean;
   valid_leads: number;
   rejected_leads: number;
   rejection_rate_pct: number;
@@ -77,9 +108,10 @@ export interface IntegrityReport {
   hard_stop_reason?: string;
 }
 
-// ─── SECTION 7 + 8: VALIDATION CORE ─────────────────────────────────────────
+// ─── SECTION 5 + 7: ENVIRONMENT-AWARE LEAD VALIDATION ────────────────────────
 export function validateLead(
   lead: LeadCandidate,
+  env: AppEnv = DEFAULT_ENV,
   previouslySentEmails: Set<string> = new Set()
 ): LeadAuditEntry {
   const ts = new Date().toISOString();
@@ -89,7 +121,7 @@ export function validateLead(
   const email = (lead.email || '').toLowerCase().trim();
   const domain = email.includes('@') ? email.split('@')[1] : '';
 
-  // ── Check 1: Email exists ─────────────────────────────────────────────────
+  // ── Check 1: Email format ─────────────────────────────────────────────────
   if (!email || !email.includes('@') || !domain) {
     failed.push('MISSING_EMAIL');
     return {
@@ -97,6 +129,9 @@ export function validateLead(
       business_name: lead.business_name || '(unknown)',
       status: 'REJECTED',
       reason: 'Email field is missing or malformed.',
+      rejection_code: 'MISSING_EMAIL',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
@@ -104,29 +139,35 @@ export function validateLead(
   }
   passed.push('EMAIL_FORMAT_OK');
 
-  // ── Check 2: Blocklist (hard stop — specific addresses) ──────────────────
-  if (INTERNAL_EMAIL_BLOCKLIST.has(email)) {
-    failed.push('BLOCKLIST_HIT');
+  // ── Check 2: Infrastructure blocklist (ALWAYS blocked, ENV irrelevant) ────
+  if (INFRA_EMAIL_BLOCKLIST.has(email)) {
+    failed.push('INFRA_EMAIL_BLOCKED');
     return {
       email,
       business_name: lead.business_name,
       status: 'REJECTED',
-      reason: `Email is on the internal/test blocklist. This address was used for warm-up testing and CANNOT receive real outreach.`,
+      reason: `Infrastructure address — own system email cannot be an outreach target in any environment.`,
+      rejection_code: 'INFRA_EMAIL_BLOCKED',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
     };
   }
-  passed.push('NOT_IN_BLOCKLIST');
+  passed.push('NOT_INFRA_EMAIL');
 
-  // ── Check 3: Blocked domain (own infrastructure) ─────────────────────────
+  // ── Check 3: Own domain (ALWAYS blocked) ─────────────────────────────────
   if (BLOCKED_DOMAINS.has(domain)) {
     failed.push('BLOCKED_DOMAIN');
     return {
       email,
       business_name: lead.business_name,
       status: 'REJECTED',
-      reason: `Domain "${domain}" is blocked — own infrastructure email cannot receive outreach.`,
+      reason: `Domain "${domain}" is our own infrastructure — cannot send outreach to own domain.`,
+      rejection_code: 'BLOCKED_DOMAIN',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
@@ -134,7 +175,45 @@ export function validateLead(
   }
   passed.push('DOMAIN_NOT_BLOCKED');
 
-  // ── Check 4: Duplicate / previously sent ─────────────────────────────────
+  // ── Check 4: TEST EMAIL — Section 2/3 logic ───────────────────────────────
+  const isTestEmail = TEST_EMAIL_LIST.has(email);
+
+  if (isTestEmail) {
+    if (env === 'PRODUCTION') {
+      // Section 5: HARD BLOCK in production — do NOT send, do NOT delete
+      failed.push('TEST_EMAIL_IN_PRODUCTION');
+      return {
+        email,
+        business_name: lead.business_name,
+        status: 'REJECTED',
+        reason: `Test email blocked in PRODUCTION mode. This address is reserved for TEST environment only. Email is preserved — switch to ENV=TEST to use it.`,
+        rejection_code: 'TEST_EMAIL_IN_PRODUCTION',
+        lead_type: 'TEST',
+        environment_used: env,
+        timestamp: ts,
+        checks_passed: passed,
+        checks_failed: failed,
+      };
+    } else {
+      // ENV === 'TEST' — Section 2: allow, tag as TEST
+      passed.push('TEST_EMAIL_ALLOWED_IN_TEST_ENV');
+      return {
+        email,
+        business_name: lead.business_name,
+        status: 'ACCEPTED',
+        reason: `Test email allowed in TEST environment. Tagged as lead_type=TEST.`,
+        rejection_code: undefined,
+        lead_type: 'TEST',
+        environment_used: 'TEST',
+        timestamp: ts,
+        checks_passed: passed,
+        checks_failed: [],
+      };
+    }
+  }
+  passed.push('NOT_TEST_EMAIL');
+
+  // ── Check 5: Duplicate / previously sent ─────────────────────────────────
   if (previouslySentEmails.has(email)) {
     failed.push('DUPLICATE_EMAIL');
     return {
@@ -142,6 +221,9 @@ export function validateLead(
       business_name: lead.business_name,
       status: 'REJECTED',
       reason: `Email already exists in a previous send batch. Duplicate outreach blocked.`,
+      rejection_code: 'DUPLICATE_EMAIL',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
@@ -149,7 +231,7 @@ export function validateLead(
   }
   passed.push('NOT_DUPLICATE');
 
-  // ── Check 5: Required fields (Section 3) ─────────────────────────────────
+  // ── Check 6: Required fields ─────────────────────────────────────────────
   const missingFields: string[] = [];
   if (!lead.business_name?.trim()) missingFields.push('business_name');
   if (!lead.phone?.trim())         missingFields.push('phone_number');
@@ -162,7 +244,10 @@ export function validateLead(
       email,
       business_name: lead.business_name || '(unknown)',
       status: 'REJECTED',
-      reason: `Missing required fields: ${missingFields.join(', ')}. All of business_name, phone_number, city, industry must be present.`,
+      reason: `Missing required fields: ${missingFields.join(', ')}.`,
+      rejection_code: 'MISSING_REQUIRED_FIELDS',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
@@ -170,17 +255,23 @@ export function validateLead(
   }
   passed.push('REQUIRED_FIELDS_PRESENT');
 
-  // ── Check 6: Personal domain → business verification (Section 4) ─────────
+  // ── Check 7: Personal domain → must have real source ─────────────────────
   if (PERSONAL_DOMAINS.has(domain)) {
-    // Allow IF business_name + phone + real source present
-    const hasSource = !!(lead.source && lead.source !== '' && lead.source !== 'test' && lead.source !== 'fallback');
+    const hasSource = !!(
+      lead.source &&
+      lead.source !== '' &&
+      !['test', 'fallback', 'internal', 'mock', 'seed', 'demo'].includes(lead.source.toLowerCase())
+    );
     if (!hasSource) {
       failed.push('PERSONAL_DOMAIN_UNVERIFIED');
       return {
         email,
         business_name: lead.business_name,
         status: 'REJECTED',
-        reason: `Personal domain (${domain}) without verified business source. Lead must come from Google Maps, Yelp, or a directory with source field set.`,
+        reason: `Personal domain (${domain}) requires a verified business source (Google Maps, Yelp, or directory). Set the source field.`,
+        rejection_code: 'PERSONAL_DOMAIN_UNVERIFIED',
+        lead_type: 'REAL',
+        environment_used: env,
         timestamp: ts,
         checks_passed: passed,
         checks_failed: failed,
@@ -191,7 +282,7 @@ export function validateLead(
     passed.push('BUSINESS_DOMAIN');
   }
 
-  // ── Check 7: Source must not be test/internal/fallback ───────────────────
+  // ── Check 8: Source must not be test/internal/fallback ───────────────────
   const blockedSources = ['test', 'fallback', 'internal', 'mock', 'seed', 'demo'];
   if (lead.source && blockedSources.includes(lead.source.toLowerCase())) {
     failed.push('BLOCKED_SOURCE');
@@ -199,7 +290,10 @@ export function validateLead(
       email,
       business_name: lead.business_name,
       status: 'REJECTED',
-      reason: `Lead source "${lead.source}" is not a real external source. Only Google Maps, Yelp, OSM, or verified directories are accepted.`,
+      reason: `Source "${lead.source}" is not a real external source. Use: google_maps, yelp, osm, yellowpages, etc.`,
+      rejection_code: 'BLOCKED_SOURCE',
+      lead_type: 'REAL',
+      environment_used: env,
       timestamp: ts,
       checks_passed: passed,
       checks_failed: failed,
@@ -213,23 +307,30 @@ export function validateLead(
     business_name: lead.business_name,
     status: 'ACCEPTED',
     reason: 'All integrity checks passed. Lead is a verified external business contact.',
+    lead_type: 'REAL',
+    environment_used: env,
     timestamp: ts,
     checks_passed: passed,
     checks_failed: [],
   };
 }
 
-// ─── SECTION 9: PIPELINE INTEGRITY GATE ─────────────────────────────────────
-const HARD_STOP_REJECTION_THRESHOLD = 0.10; // 10%
+// ─── PIPELINE GATE ────────────────────────────────────────────────────────────
+// Counts only INFRA/BLOCKED_DOMAIN/DUPLICATE rejections toward hard-stop.
+// TEST_EMAIL_IN_PRODUCTION is NOT a hard-stop trigger — it's expected behavior.
+const HARD_STOP_REJECTION_THRESHOLD = 0.10;
 
 export function runIntegrityGate(
   leads: LeadCandidate[],
+  env: AppEnv = DEFAULT_ENV,
   previouslySentEmails: Set<string> = new Set()
 ): IntegrityReport {
 
   if (leads.length === 0) {
     return {
       status: 'SCRAPER_INSUFFICIENT_DATA',
+      mode: env,
+      test_emails_blocked_in_production: env === 'PRODUCTION',
       valid_leads: 0,
       rejected_leads: 0,
       rejection_rate_pct: 0,
@@ -247,14 +348,19 @@ export function runIntegrityGate(
   const seenEmails = new Set<string>(previouslySentEmails);
 
   for (const lead of leads) {
-    const entry = validateLead(lead, seenEmails);
+    const entry = validateLead(lead, env, seenEmails);
     audit_log.push(entry);
 
     if (entry.status === 'ACCEPTED') {
-      accepted.push(lead);
-      seenEmails.add(entry.email); // mark as seen to catch duplicates within this batch
+      // Section 4: tag the lead before accepting
+      accepted.push({
+        ...lead,
+        lead_type: entry.lead_type,
+        environment_used: env,
+      });
+      seenEmails.add(entry.email);
     } else {
-      rejected.push(lead);
+      rejected.push({ ...lead, lead_type: entry.lead_type, environment_used: env });
     }
   }
 
@@ -262,36 +368,38 @@ export function runIntegrityGate(
   const rejectedCount = rejected.length;
   const rejection_rate_pct = parseFloat(((rejectedCount / total) * 100).toFixed(1));
 
-  // ── Section 9: Hard stop check ────────────────────────────────────────────
-  // Count rejections due to internal/test/duplicate reasons specifically
-  const integrityRejections = audit_log.filter(e =>
+  // Hard-stop: only triggered by true data integrity failures
+  // (infra block, own domain, duplicate) — NOT by env-filtered test emails
+  const hardIntegrityRejections = audit_log.filter(e =>
     e.status === 'REJECTED' &&
-    (e.checks_failed.includes('BLOCKLIST_HIT') ||
-     e.checks_failed.includes('BLOCKED_DOMAIN') ||
-     e.checks_failed.includes('DUPLICATE_EMAIL') ||
-     e.checks_failed.includes('BLOCKED_SOURCE'))
+    ['INFRA_EMAIL_BLOCKED', 'BLOCKED_DOMAIN', 'DUPLICATE_EMAIL', 'BLOCKED_SOURCE'].includes(
+      e.rejection_code || ''
+    )
   ).length;
 
-  const integrityRejectionRate = integrityRejections / total;
-  const hardStop = integrityRejectionRate > HARD_STOP_REJECTION_THRESHOLD;
+  const hardStop = hardIntegrityRejections / total > HARD_STOP_REJECTION_THRESHOLD;
 
   if (hardStop) {
     return {
       status: 'DATA_INTEGRITY_FAILURE',
+      mode: env,
+      test_emails_blocked_in_production: env === 'PRODUCTION',
       valid_leads: accepted.length,
       rejected_leads: rejectedCount,
       rejection_rate_pct,
       ready_for_outreach: false,
       audit_log,
-      accepted: [],      // clear accepted — do NOT proceed
+      accepted: [],
       rejected,
       hard_stop_triggered: true,
-      hard_stop_reason: `${(integrityRejectionRate * 100).toFixed(1)}% of leads failed integrity checks (internal/test/duplicate). Pipeline halted. Investigate lead source before retrying.`,
+      hard_stop_reason: `${(hardIntegrityRejections / total * 100).toFixed(1)}% of leads triggered hard integrity violations (infra emails, own domains, or duplicates). Pipeline halted.`,
     };
   }
 
   return {
-    status: 'REAL_LEADS_ONLY',
+    status: 'ENVIRONMENT_FILTER_ACTIVE',
+    mode: env,
+    test_emails_blocked_in_production: env === 'PRODUCTION',
     valid_leads: accepted.length,
     rejected_leads: rejectedCount,
     rejection_rate_pct,
@@ -303,7 +411,7 @@ export function runIntegrityGate(
   };
 }
 
-// ─── SCRAPER INSUFFICIENT DATA RESPONSE ──────────────────────────────────────
+// ─── SCRAPER INSUFFICIENT DATA ────────────────────────────────────────────────
 export function scraperInsufficientData(found: number, required: number) {
   return {
     status: 'SCRAPER_INSUFFICIENT_DATA' as const,
@@ -311,4 +419,9 @@ export function scraperInsufficientData(found: number, required: number) {
     required,
     action: 'EXPAND_SEARCH_OR_CHANGE_FILTERS',
   };
+}
+
+// ─── ENV HELPER ───────────────────────────────────────────────────────────────
+export function resolveEnv(raw?: string | null): AppEnv {
+  return (raw || '').toUpperCase() === 'TEST' ? 'TEST' : 'PRODUCTION';
 }

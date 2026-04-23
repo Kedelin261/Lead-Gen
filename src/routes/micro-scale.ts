@@ -14,10 +14,26 @@ import { checkLinkPolicy } from '../lib/warmup-engine';
 import {
   runIntegrityGate,
   validateLead,
+  resolveEnv,
   INTERNAL_EMAIL_BLOCKLIST,
+  TEST_EMAIL_LIST,
+  INFRA_EMAIL_BLOCKLIST,
   type LeadCandidate,
   type IntegrityReport,
+  type AppEnv,
 } from '../lib/lead-integrity';
+
+// ─── ENV READER ───────────────────────────────────────────────────────────────
+async function readAppEnv(DB: D1Database): Promise<AppEnv> {
+  try {
+    const row = await DB.prepare(
+      `SELECT value FROM settings WHERE key = 'app_env'`
+    ).first<{ value: string }>();
+    return resolveEnv(row?.value);
+  } catch {
+    return 'PRODUCTION';
+  }
+}
 
 const microScale = new Hono<{ Bindings: Bindings }>();
 
@@ -395,14 +411,16 @@ microScale.get('/leads', async (c) => {
 });
 
 // ─── POST /api/micro-scale/send-day1 ─────────────────────────────────────────
-// Send Day 1 emails to leads that have an email address (no links).
-// Every lead passes through the integrity gate before sending — no exceptions.
+// Send Day 1 emails. Reads ENV from DB. Test emails allowed in TEST, blocked in PRODUCTION.
 microScale.post('/send-day1', async (c) => {
   const { DB, RESEND_API_KEY } = c.env;
   const body = await c.req.json().catch(() => ({})) as {
     lead_ids?: string[];
     dry_run?: boolean;
   };
+
+  // Read ENV — determines test email behavior
+  const env = await readAppEnv(DB);
 
   // Load persisted lead states
   let leads = [...MEMPHIS_LEADS];
@@ -453,7 +471,7 @@ microScale.post('/send-day1', async (c) => {
     website_status: l.website_status,
   }));
 
-  const integrityReport: IntegrityReport = runIntegrityGate(integrityInput);
+  const integrityReport: IntegrityReport = runIntegrityGate(integrityInput, env);
 
   // Hard stop — pipeline halted
   if (integrityReport.hard_stop_triggered) {
@@ -491,6 +509,7 @@ microScale.post('/send-day1', async (c) => {
     // Re-validate this individual lead one final time (Section 7 — per-email check)
     const finalCheck = validateLead(
       { email: lead.email, business_name: lead.business_name, phone: lead.phone, city: lead.city, industry: lead.industry, source: 'osm' },
+      env,
       new Set()
     );
 
@@ -601,6 +620,9 @@ microScale.post('/send-day1', async (c) => {
   const blockedCount = results.filter(r => r.status === 'INTEGRITY_BLOCKED').length;
 
   return c.json({
+    status: 'ENVIRONMENT_FILTER_ACTIVE',
+    mode: env,
+    test_emails_blocked_in_production: env === 'PRODUCTION',
     integrity_gate: integrityReport.status,
     valid_after_gate: integrityReport.valid_leads,
     rejected_by_gate: integrityReport.rejected_leads,
@@ -759,40 +781,61 @@ microScale.patch('/leads/:id', async (c) => {
   const lead = MEMPHIS_LEADS.find(l => l.id === leadId);
   if (!lead) return c.json({ error: `Lead ${leadId} not found` }, 404);
 
-  // ── Integrity check on incoming email ────────────────────────────────────
+  // ── Integrity check on incoming email (env-aware) ────────────────────────
   if (updates.email) {
+    const env = await readAppEnv(DB);
     const emailLower = updates.email.toLowerCase().trim();
-    if (INTERNAL_EMAIL_BLOCKLIST.has(emailLower)) {
+
+    // Infra emails are always blocked regardless of ENV
+    if (INFRA_EMAIL_BLOCKLIST.has(emailLower)) {
       return c.json({
         error: 'INTEGRITY_VIOLATION',
-        reason: `"${updates.email}" is on the internal/test email blocklist. This address was used for warm-up testing and cannot be assigned to a real lead. Source a real business email from Google Maps, Yelp, or the business website.`,
+        rejection_code: 'INFRA_EMAIL_BLOCKED',
+        reason: `"${updates.email}" is an infrastructure address and cannot be assigned to any lead in any environment.`,
         blocked_email: updates.email,
         action: 'SOURCE_REAL_BUSINESS_EMAIL',
       }, 403);
     }
 
-    // Validate the full lead with incoming email
-    const check = validateLead({
-      email: updates.email,
-      business_name: lead.business_name,
-      phone: lead.phone,
-      city: lead.city,
-      industry: lead.industry,
-      source: 'osm',
-    });
-
-    if (check.status === 'REJECTED') {
-      // Allow if only flagged for PERSONAL_DOMAIN (business can have gmail) as long as blocklist clear
-      const hardFailures = check.checks_failed.filter(f =>
-        f !== 'PERSONAL_DOMAIN_UNVERIFIED'
-      );
-      if (hardFailures.length > 0) {
+    // Test emails: blocked in PRODUCTION, allowed in TEST (with tag)
+    if (TEST_EMAIL_LIST.has(emailLower)) {
+      if (env === 'PRODUCTION') {
         return c.json({
           error: 'INTEGRITY_VIOLATION',
-          reason: check.reason,
-          checks_failed: check.checks_failed,
-          action: 'SOURCE_REAL_BUSINESS_EMAIL',
+          rejection_code: 'TEST_EMAIL_IN_PRODUCTION',
+          reason: `"${updates.email}" is a test email — blocked in PRODUCTION mode. Email preserved for testing. Set ENV=TEST via POST /api/integrity/env to allow it.`,
+          blocked_email: updates.email,
+          mode: 'PRODUCTION',
+          test_emails_blocked_in_production: true,
+          action: 'SET_ENV_TEST_OR_SOURCE_REAL_EMAIL',
         }, 403);
+      }
+      // TEST mode — allow, will be tagged
+    }
+
+    // Full validation for non-test emails
+    if (!TEST_EMAIL_LIST.has(emailLower)) {
+      const check = validateLead({
+        email: updates.email,
+        business_name: lead.business_name,
+        phone: lead.phone,
+        city: lead.city,
+        industry: lead.industry,
+        source: 'osm',
+      }, env);
+
+      if (check.status === 'REJECTED') {
+        const hardFailures = check.checks_failed.filter(f => f !== 'PERSONAL_DOMAIN_UNVERIFIED');
+        if (hardFailures.length > 0) {
+          return c.json({
+            error: 'INTEGRITY_VIOLATION',
+            rejection_code: check.rejection_code,
+            reason: check.reason,
+            checks_failed: check.checks_failed,
+            mode: env,
+            action: 'SOURCE_REAL_BUSINESS_EMAIL',
+          }, 403);
+        }
       }
     }
   }
@@ -806,6 +849,10 @@ microScale.patch('/leads/:id', async (c) => {
     if (row) currentState = { ...currentState, ...JSON.parse(row.value) };
   } catch { /* ignore */ }
 
+  // Section 4: determine lead_type tag
+  const emailForTagging = (updates.email || currentState.email || '').toLowerCase().trim();
+  const leadTypeTag = TEST_EMAIL_LIST.has(emailForTagging) ? 'TEST' : 'REAL';
+
   const newState: MicroLead = {
     ...currentState,
     ...updates,
@@ -813,6 +860,9 @@ microScale.patch('/leads/:id', async (c) => {
     tracking: { ...currentState.tracking, ...(updates.tracking || {}) },
     resend_ids: updates.resend_ids || currentState.resend_ids,
   };
+
+  // Attach Section 4 metadata
+  (newState as Record<string, unknown>).lead_type = leadTypeTag;
 
   if (updates.tracking?.replied || updates.reply_received) {
     newState.reply_received = true;
