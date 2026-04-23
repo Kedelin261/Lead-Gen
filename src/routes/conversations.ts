@@ -90,14 +90,28 @@ conversations.post('/webhook/sms', async (c) => {
 
   if (!from || !msgBody) return c.text('', 200);
 
+  // Normalize phone: strip all non-digits for DB comparison
+  const normalizePhone = (p: string) => p.replace(/\D/g, '');
+  const fromDigits = normalizePhone(from);
+
   // Handle OPT-OUT
   if (msgBody.trim().toUpperCase() === 'STOP') {
-    await DB.prepare(`UPDATE leads SET status='LOST', notes=? WHERE phone=?`).bind('Opted out via SMS', from).run();
+    // Match by normalized digits (last 10 digits)
+    const last10 = fromDigits.slice(-10);
+    await DB.prepare(`
+      UPDATE leads SET status='LOST', notes='Opted out via SMS'
+      WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'(',''),')',''),'+','') LIKE ?
+    `).bind(`%${last10}`).run();
     return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Message>You have been unsubscribed. Reply START to resubscribe.</Message></Response>', 200, { 'Content-Type': 'text/xml' });
   }
 
-  // Find lead by phone
-  const lead = await DB.prepare(`SELECT * FROM leads WHERE phone=? LIMIT 1`).bind(from).first<{ id: number }>();
+  // Find lead by phone (normalized match — last 10 digits)
+  const last10 = fromDigits.slice(-10);
+  const lead = await DB.prepare(`
+    SELECT * FROM leads
+    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'(',''),')',''),'+','') LIKE ?
+    LIMIT 1
+  `).bind(`%${last10}`).first<{ id: number }>();
 
   if (lead) {
     await DB.prepare(`

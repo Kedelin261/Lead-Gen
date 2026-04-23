@@ -11,19 +11,25 @@ export interface LeadScoreInput {
 export function calculateLeadScore(input: LeadScoreInput): number {
   let score = 0;
 
-  // Website status
-  if (input.website_status === 'NONE') score += 40;
-  else if (input.website_status === 'WEAK') score += 25;
-  else score += 0; // Has good website - skip
-
-  // Facebook only presence
-  if (input.is_facebook_only) score += 25;
+  // Website status — mutually exclusive tiers
+  // NONE = no web presence at all (+40)
+  // WEAK = social/directory only (Facebook, Yelp, etc.) (+25)
+  // EXISTS = real domain website (+0)
+  // NOTE: Facebook-only is already captured by WEAK status — no double-count
+  if (input.website_status === 'NONE') {
+    score += 40;
+  } else if (input.website_status === 'WEAK') {
+    // WEAK already implies facebook/social-only presence
+    // Do NOT add extra +25 for is_facebook_only to prevent double-counting
+    score += 25;
+  }
+  // EXISTS = 0 points
 
   // Contact info
   if (input.has_phone) score += 15;
   if (input.has_email) score += 10;
 
-  // Active business
+  // Active business signal
   if (input.is_active) score += 10;
 
   return Math.min(score, 100);

@@ -213,19 +213,35 @@ outreach.post('/sequence', async (c) => {
   }>();
   if (!lead) return c.json({ error: 'Lead not found' }, 404);
 
-  // Check outreach count - max 3 attempts
-  const attempts = await DB.prepare(`
+  // Count total outreach records for this lead across all channels
+  // Max limit: 9 total records (Day1: call+sms+email=3, Day3: email=1, Day5: sms=1 → up to 5)
+  // Enforce hard cap of 9 total records to prevent infinite retries
+  const totalRecords = await DB.prepare(`
     SELECT COUNT(*) as count FROM outreach WHERE lead_id = ?
   `).bind(lead_id).first<{ count: number }>();
 
-  if ((attempts?.count || 0) >= 9) {
-    return c.json({ error: 'Max outreach attempts reached for this lead' }, 409);
+  // Also count how many sequence "days" have been executed (tracked by attempt_number)
+  // Day 1 uses attempt_number=1, Day 3 uses attempt_number=2, Day 5 uses attempt_number=3
+  const maxAttempt = await DB.prepare(`
+    SELECT MAX(attempt_number) as max_attempt FROM outreach WHERE lead_id = ?
+  `).bind(lead_id).first<{ max_attempt: number }>();
+
+  // If 3 sequence days already run (attempt numbers 1, 2, 3), block further sequences
+  if ((maxAttempt?.max_attempt || 0) >= 3 || (totalRecords?.count || 0) >= 9) {
+    return c.json({ error: 'Max outreach attempts reached for this lead (3 sequence days limit)' }, 409);
   }
 
   const results: Record<string, unknown> = { day, lead_id };
 
   if (day === 1) {
     // Day 1: Call → SMS → Email (with delays)
+    if (lead.phone) {
+      const callScript = await generateCallScript(lead.name, lead.industry, lead.city, 'there', '');
+      await DB.prepare(`
+        INSERT INTO outreach (lead_id, channel, status, body, sent_at, attempt_number)
+        VALUES (?, 'call', 'SENT', ?, CURRENT_TIMESTAMP, 1)
+      `).bind(lead_id, callScript).run();
+    }
     results.call = { status: 'logged', phone: lead.phone };
 
     if (lead.phone) {

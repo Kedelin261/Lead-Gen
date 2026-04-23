@@ -78,6 +78,24 @@ leads.post('/', async (c) => {
 
   if (!name) return c.json({ error: 'Name is required' }, 400);
 
+  // DUPLICATE PREVENTION: check by phone OR email
+  if (phone || email) {
+    let dupQuery = `SELECT id, name, status FROM leads WHERE `;
+    const dupParams: string[] = [];
+    const dupClauses: string[] = [];
+    if (phone) { dupClauses.push(`phone = ?`); dupParams.push(phone); }
+    if (email) { dupClauses.push(`email = ?`); dupParams.push(email); }
+    dupQuery += dupClauses.join(' OR ') + ' LIMIT 1';
+    const existing = await DB.prepare(dupQuery).bind(...dupParams).first<{ id: number; name: string; status: string }>();
+    if (existing) {
+      return c.json({
+        error: 'Duplicate lead detected',
+        existing_lead: existing,
+        message: `A lead with this phone/email already exists (ID=${existing.id}, Status=${existing.status})`
+      }, 409);
+    }
+  }
+
   const websiteStatus = classifyWebsiteStatus(website);
   const score = calculateLeadScore({
     website_status: websiteStatus,

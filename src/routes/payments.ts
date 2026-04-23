@@ -120,6 +120,16 @@ payments.post('/webhook', async (c) => {
       const leadId = session.metadata?.lead_id;
 
       if (leadId) {
+        // IDEMPOTENCY CHECK: Only process if payment not already marked PAID
+        const existingPayment = await DB.prepare(
+          `SELECT id, status FROM payments WHERE stripe_session_id = ?`
+        ).bind(session.id).first<{ id: number; status: string }>();
+
+        if (existingPayment && existingPayment.status === 'PAID') {
+          // Already processed — return success without duplicate action
+          return c.json({ received: true, status: 'already_processed' });
+        }
+
         await DB.prepare(`
           UPDATE payments SET status='PAID', paid_at=CURRENT_TIMESTAMP,
           stripe_payment_intent=? WHERE stripe_session_id=?
@@ -129,7 +139,7 @@ payments.post('/webhook', async (c) => {
           UPDATE leads SET status='CLOSED', updated_at=CURRENT_TIMESTAMP WHERE id=?
         `).bind(leadId).run();
 
-        // Log conversion
+        // Log conversion (only on first processing)
         await DB.prepare(`
           INSERT INTO conversations (lead_id, channel, direction, message)
           VALUES (?, 'system', 'inbound', 'PAYMENT RECEIVED - Website order confirmed')
