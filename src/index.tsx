@@ -10,6 +10,7 @@ import dashboardRoute from './routes/dashboard'
 import conversationsRoute from './routes/conversations'
 import settingsRoute from './routes/settings'
 import validationRoute from './routes/validation'
+import warmupRoute from './routes/warmup'
 import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -26,6 +27,7 @@ app.route('/api/dashboard', dashboardRoute)
 app.route('/api/conversations', conversationsRoute)
 app.route('/api/settings', settingsRoute)
 app.route('/api/validation', validationRoute)
+app.route('/api/warmup', warmupRoute)
 
 // === DEMO VIEWER (public) ===
 // Priority 1: Slug-based prospect demo pages (no DB required)
