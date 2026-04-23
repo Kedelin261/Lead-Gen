@@ -42,21 +42,63 @@ function getRequiredDnsRecords(domain: string) {
 }
 
 /**
- * Verify a single DNS record using Cloudflare DNS-over-HTTPS (1.1.1.1).
- * Works inside Cloudflare Workers — no Node DNS module needed.
+ * Verify a DNS record using Cloudflare DNS-over-HTTPS.
+ *
+ * DKIM LOGIC (updated):
+ *   DKIM is VALID if ANY of the following resolve with a real value:
+ *     - CNAME resend._domainkey → resend.dkim.resend.com
+ *     - TXT   resend._domainkey → contains a valid DKIM public key (p=...)
+ *   Record type (TXT vs CNAME) does NOT determine validity.
+ *   Only the presence of a real DKIM key or valid CNAME matters.
+ *
+ * For SPF / DMARC: standard exact-match logic applies.
  */
 async function checkDnsRecord(type: string, name: string, expected: string): Promise<{
   found: boolean; actual: string[]; match: boolean;
 }> {
   try {
+    // For DKIM: check BOTH CNAME and TXT — whichever has a valid value wins
+    const isDkim = name.includes('_domainkey');
+
+    if (isDkim) {
+      // Try CNAME first
+      const cnameUrl = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=CNAME`;
+      const cnameResp = await fetch(cnameUrl, { headers: { Accept: 'application/dns-json' } });
+      const cnameData = cnameResp.ok
+        ? await cnameResp.json() as { Answer?: { data: string }[] }
+        : { Answer: [] };
+      const cnameAnswers = (cnameData.Answer || []).map(a => a.data.replace(/^"|"$/g, '').toLowerCase());
+      const cnameMatch = cnameAnswers.some(a => a.includes('resend') || a.includes('dkim'));
+
+      // Try TXT (legacy public key format)
+      const txtUrl = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=TXT`;
+      const txtResp = await fetch(txtUrl, { headers: { Accept: 'application/dns-json' } });
+      const txtData = txtResp.ok
+        ? await txtResp.json() as { Answer?: { data: string }[] }
+        : { Answer: [] };
+      const txtAnswers = (txtData.Answer || []).map(a => a.data.replace(/^"|"$/g, '').toLowerCase());
+      // A valid DKIM TXT key starts with "v=dkim1" or contains "p=" (public key)
+      const txtMatch = txtAnswers.some(a => a.startsWith('v=dkim1') || a.includes('p=') || a.includes('k=rsa'));
+
+      const allAnswers = [...cnameAnswers, ...txtAnswers];
+      const match = cnameMatch || txtMatch;
+
+      return { found: allAnswers.length > 0, actual: allAnswers, match };
+    }
+
+    // Standard check for SPF and DMARC
     const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`;
     const resp = await fetch(url, { headers: { Accept: 'application/dns-json' } });
     if (!resp.ok) return { found: false, actual: [], match: false };
     const data = await resp.json() as { Answer?: { data: string }[] };
     const answers = (data.Answer || []).map(a => a.data.replace(/^"|"$/g, '').toLowerCase());
     const normalised = expected.toLowerCase();
-    const match = answers.some(a => a === normalised || a.includes(normalised) || normalised.includes(a) ||
-      (normalised.includes('resend') && a.includes('resend')));
+    const match = answers.some(a =>
+      a === normalised ||
+      a.includes(normalised) ||
+      normalised.includes(a) ||
+      (normalised.includes('resend') && a.includes('resend'))
+    );
     return { found: answers.length > 0, actual: answers, match };
   } catch {
     return { found: false, actual: [], match: false };

@@ -10,6 +10,7 @@ import dashboardRoute from './routes/dashboard'
 import conversationsRoute from './routes/conversations'
 import settingsRoute from './routes/settings'
 import validationRoute from './routes/validation'
+import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -27,11 +28,35 @@ app.route('/api/settings', settingsRoute)
 app.route('/api/validation', validationRoute)
 
 // === DEMO VIEWER (public) ===
+// Priority 1: Slug-based prospect demo pages (no DB required)
 app.get('/demo/:slug', async (c) => {
+  const slug = c.req.param('slug')
+  const { APP_URL } = c.env
+
+  // Check prospect demo registry first
+  const prospect = getProspectBySlug(slug)
+  if (prospect) {
+    const appUrl = APP_URL || 'https://websitedemopro.org'
+    return c.html(renderProspectDemoHTML(prospect, appUrl))
+  }
+
+  // Fallback: DB-backed demo (existing lead demos via numeric ID suffix)
   return demosRoute.fetch(
     new Request(c.req.url.replace('/demo/', '/view/')),
     c.env as Record<string, unknown>
   )
+})
+
+// === PROSPECT DEMO TRACKING ===
+app.post('/api/demos/track-prospect', async (c) => {
+  try {
+    const { slug, event, business } = await c.req.json()
+    // Log to console (Cloudflare Workers logging)
+    console.log(`[PROSPECT_TRACK] slug=${slug} event=${event} business=${business} ts=${new Date().toISOString()}`)
+    return c.json({ tracked: true, slug, event })
+  } catch {
+    return c.json({ tracked: false }, 400)
+  }
 })
 
 // === PAYMENT SUCCESS/CANCEL PAGES ===
