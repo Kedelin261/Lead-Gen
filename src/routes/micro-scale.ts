@@ -11,6 +11,13 @@
 import { Hono } from 'hono';
 import type { Bindings } from '../types';
 import { checkLinkPolicy } from '../lib/warmup-engine';
+import {
+  runIntegrityGate,
+  validateLead,
+  INTERNAL_EMAIL_BLOCKLIST,
+  type LeadCandidate,
+  type IntegrityReport,
+} from '../lib/lead-integrity';
 
 const microScale = new Hono<{ Bindings: Bindings }>();
 
@@ -388,11 +395,12 @@ microScale.get('/leads', async (c) => {
 });
 
 // ─── POST /api/micro-scale/send-day1 ─────────────────────────────────────────
-// Send Day 1 emails to leads that have an email address (no links)
+// Send Day 1 emails to leads that have an email address (no links).
+// Every lead passes through the integrity gate before sending — no exceptions.
 microScale.post('/send-day1', async (c) => {
-  const { DB, RESEND_API_KEY, APP_URL } = c.env;
+  const { DB, RESEND_API_KEY } = c.env;
   const body = await c.req.json().catch(() => ({})) as {
-    lead_ids?: string[];       // specific leads; if omitted → first 5 with email
+    lead_ids?: string[];
     dry_run?: boolean;
   };
 
@@ -410,28 +418,68 @@ microScale.post('/send-day1', async (c) => {
     }
   } catch { /* ignore */ }
 
-  // Select targets: leads with email, not yet sent, within daily limit
-  const emailReady = leads.filter(l =>
-    l.email &&
-    !l.tracking.sent &&
-    !l.day1_email_sent
-  );
-
-  let targets: MicroLead[];
+  // Select candidates: email present, not yet sent, within daily limit
+  const emailReady = leads.filter(l => l.email && !l.tracking.sent && !l.day1_email_sent);
+  let candidates: MicroLead[];
   if (body.lead_ids?.length) {
-    targets = emailReady.filter(l => body.lead_ids!.includes(l.id));
+    candidates = emailReady.filter(l => body.lead_ids!.includes(l.id));
   } else {
-    targets = emailReady.slice(0, DAILY_LIMITS.emails);
+    candidates = emailReady.slice(0, DAILY_LIMITS.emails);
   }
 
-  if (targets.length === 0) {
+  if (candidates.length === 0) {
     return c.json({
       sent: 0,
       skipped: leads.filter(l => !l.email).length,
-      reason: 'No leads with email address available. Add email addresses first using PATCH /api/micro-scale/leads/:id',
-      needs_emails: leads.filter(l => !l.email).map(l => ({ id: l.id, business_name: l.business_name, phone: l.phone })),
+      reason: 'No leads with email address available. Add real business emails using PATCH /api/micro-scale/leads/:id',
+      needs_emails: leads.filter(l => !l.email).map(l => ({
+        id: l.id,
+        business_name: l.business_name,
+        phone: l.phone,
+      })),
     });
   }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ██  INTEGRITY GATE — runs before ANY email is dispatched  ██
+  // ══════════════════════════════════════════════════════════════════
+  const integrityInput: LeadCandidate[] = candidates.map(l => ({
+    email: l.email,
+    business_name: l.business_name,
+    phone: l.phone,
+    city: l.city,
+    industry: l.industry,
+    source: 'osm',   // OpenStreetMap — real external scrape
+    website_status: l.website_status,
+  }));
+
+  const integrityReport: IntegrityReport = runIntegrityGate(integrityInput);
+
+  // Hard stop — pipeline halted
+  if (integrityReport.hard_stop_triggered) {
+    return c.json({
+      integrity_gate: 'HARD_STOP',
+      sent: 0,
+      status: integrityReport.status,
+      reason: integrityReport.hard_stop_reason,
+      audit_log: integrityReport.audit_log,
+    }, 403);
+  }
+
+  // No valid leads after integrity check
+  if (integrityReport.valid_leads === 0) {
+    return c.json({
+      integrity_gate: 'ALL_REJECTED',
+      sent: 0,
+      rejected_leads: integrityReport.rejected_leads,
+      status: integrityReport.status,
+      audit_log: integrityReport.audit_log,
+    }, 422);
+  }
+
+  // Build approved set from integrity report
+  const approvedEmails = new Set(integrityReport.accepted.map(l => l.email.toLowerCase().trim()));
+  const targets = candidates.filter(l => approvedEmails.has(l.email.toLowerCase().trim()));
 
   const results = [];
   const fromEmail = 'alex@websitedemopro.org';
@@ -439,6 +487,24 @@ microScale.post('/send-day1', async (c) => {
   for (const lead of targets) {
     const subject = buildDay1Subject(lead.business_name);
     const body_text = buildDay1Body(lead);
+
+    // Re-validate this individual lead one final time (Section 7 — per-email check)
+    const finalCheck = validateLead(
+      { email: lead.email, business_name: lead.business_name, phone: lead.phone, city: lead.city, industry: lead.industry, source: 'osm' },
+      new Set()
+    );
+
+    if (finalCheck.status === 'REJECTED') {
+      results.push({
+        id: lead.id,
+        business_name: lead.business_name,
+        email: lead.email,
+        status: 'INTEGRITY_BLOCKED',
+        reason: finalCheck.reason,
+        sent_at: null,
+      });
+      continue;
+    }
 
     if (body.dry_run) {
       results.push({
@@ -450,11 +516,12 @@ microScale.post('/send-day1', async (c) => {
         dry_run: true,
         link_allowed: false,
         status: 'DRY_RUN',
+        integrity_check: 'PASSED',
       });
       continue;
     }
 
-    // Send via Resend
+    // ── Send via Resend ───────────────────────────────────────────
     let resendId = null;
     let sendStatus = 'FAILED';
     let errorMsg = null;
@@ -531,14 +598,20 @@ microScale.post('/send-day1', async (c) => {
   }
 
   const sentCount = results.filter(r => r.status === 'SENT').length;
+  const blockedCount = results.filter(r => r.status === 'INTEGRITY_BLOCKED').length;
 
   return c.json({
+    integrity_gate: integrityReport.status,
+    valid_after_gate: integrityReport.valid_leads,
+    rejected_by_gate: integrityReport.rejected_leads,
     sent: sentCount,
     failed: results.filter(r => r.status === 'FAILED').length,
+    blocked_by_integrity: blockedCount,
     dry_run: !!body.dry_run,
     daily_limit: DAILY_LIMITS.emails,
     remaining_today: Math.max(0, DAILY_LIMITS.emails - sentCount),
     results,
+    audit_log: integrityReport.audit_log,
   });
 });
 
@@ -676,7 +749,8 @@ microScale.post('/send-followup', async (c) => {
 });
 
 // ─── PATCH /api/micro-scale/leads/:id ────────────────────────────────────────
-// Update lead data (add email, update tracking, mark replied, etc.)
+// Update lead data (add email, tracking, reply status).
+// Email field is screened against the integrity blocklist before saving.
 microScale.patch('/leads/:id', async (c) => {
   const { DB } = c.env;
   const leadId = c.req.param('id');
@@ -684,6 +758,44 @@ microScale.patch('/leads/:id', async (c) => {
 
   const lead = MEMPHIS_LEADS.find(l => l.id === leadId);
   if (!lead) return c.json({ error: `Lead ${leadId} not found` }, 404);
+
+  // ── Integrity check on incoming email ────────────────────────────────────
+  if (updates.email) {
+    const emailLower = updates.email.toLowerCase().trim();
+    if (INTERNAL_EMAIL_BLOCKLIST.has(emailLower)) {
+      return c.json({
+        error: 'INTEGRITY_VIOLATION',
+        reason: `"${updates.email}" is on the internal/test email blocklist. This address was used for warm-up testing and cannot be assigned to a real lead. Source a real business email from Google Maps, Yelp, or the business website.`,
+        blocked_email: updates.email,
+        action: 'SOURCE_REAL_BUSINESS_EMAIL',
+      }, 403);
+    }
+
+    // Validate the full lead with incoming email
+    const check = validateLead({
+      email: updates.email,
+      business_name: lead.business_name,
+      phone: lead.phone,
+      city: lead.city,
+      industry: lead.industry,
+      source: 'osm',
+    });
+
+    if (check.status === 'REJECTED') {
+      // Allow if only flagged for PERSONAL_DOMAIN (business can have gmail) as long as blocklist clear
+      const hardFailures = check.checks_failed.filter(f =>
+        f !== 'PERSONAL_DOMAIN_UNVERIFIED'
+      );
+      if (hardFailures.length > 0) {
+        return c.json({
+          error: 'INTEGRITY_VIOLATION',
+          reason: check.reason,
+          checks_failed: check.checks_failed,
+          action: 'SOURCE_REAL_BUSINESS_EMAIL',
+        }, 403);
+      }
+    }
+  }
 
   // Load current persisted state
   let currentState = { ...lead };
@@ -694,16 +806,14 @@ microScale.patch('/leads/:id', async (c) => {
     if (row) currentState = { ...currentState, ...JSON.parse(row.value) };
   } catch { /* ignore */ }
 
-  // Merge updates (allow updating email, tracking fields, reply_received, etc.)
   const newState: MicroLead = {
     ...currentState,
     ...updates,
-    id: leadId,                         // prevent ID override
+    id: leadId,
     tracking: { ...currentState.tracking, ...(updates.tracking || {}) },
     resend_ids: updates.resend_ids || currentState.resend_ids,
   };
 
-  // Auto-flag reply
   if (updates.tracking?.replied || updates.reply_received) {
     newState.reply_received = true;
     newState.tracking.replied = true;

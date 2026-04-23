@@ -12,6 +12,7 @@ import settingsRoute from './routes/settings'
 import validationRoute from './routes/validation'
 import warmupRoute from './routes/warmup'
 import microScaleRoute from './routes/micro-scale'
+import integrityRoute from './routes/integrity'
 import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -30,6 +31,7 @@ app.route('/api/settings', settingsRoute)
 app.route('/api/validation', validationRoute)
 app.route('/api/warmup', warmupRoute)
 app.route('/api/micro-scale', microScaleRoute)
+app.route('/api/integrity', integrityRoute)
 
 // === DEMO VIEWER (public) ===
 // Priority 1: Slug-based prospect demo pages (no DB required)
