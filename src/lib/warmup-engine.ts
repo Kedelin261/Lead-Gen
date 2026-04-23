@@ -34,6 +34,24 @@ export interface SendRecord {
   demo_slug?: string;
 }
 
+// Per-recipient thread context fed into checkLinkPolicy
+export interface ThreadContext {
+  recipient: string;
+  reply_received: boolean;   // has this recipient replied at least once?
+  thread_depth: number;     // total emails sent in this thread (1 = first touch only)
+  warmup_day: number;       // current warmup day (1-indexed)
+  reply_rate: number;       // domain-level reply_rate (0..1)
+  total_sends: number;      // total sends across all recipients
+}
+
+export interface LinkPolicyResult {
+  link_allowed: boolean;
+  reason: string;
+  recommended_step: 'SEND_SOFT_FOLLOWUP' | 'SEND_LINK' | 'WAIT';
+  max_links: number;        // 0 or 1
+  link_style_note: string;  // copy guidance when link IS allowed
+}
+
 export interface EngagementMetrics {
   total_sent: number;
   replies_received: number;
@@ -135,6 +153,93 @@ export const WARMUP_SCHEDULE: WarmupConfig[] = [
     },
   },
 ];
+
+// ─── LINK POLICY CHECKER ─────────────────────────────────
+/**
+ * Determines whether a link may be included in the next email
+ * to a specific recipient, based on thread state.
+ *
+ * ALLOW conditions (any one is sufficient):
+ *   1. reply_received == true
+ *   2. thread_depth >= 2  (at least one follow-up already sent)
+ *   3. warmup_day >= 3 AND domain reply_rate >= 20%
+ *
+ * HARD BLOCK (all three must be true simultaneously):
+ *   reply_received == false
+ *   AND thread_depth == 1
+ *   AND total_sends < 25
+ *
+ * Placement (PRIMARY / PROMOTIONS) is NOT a sufficient condition.
+ */
+export function checkLinkPolicy(ctx: ThreadContext): LinkPolicyResult {
+  const LINK_STYLE = 'if you\'re curious, I put together something quick here: {{demo_url}}';
+
+  // ── Hard block: first-touch, no reply, early stage ────────
+  const hardBlocked =
+    !ctx.reply_received &&
+    ctx.thread_depth === 1 &&
+    ctx.total_sends < 25;
+
+  if (hardBlocked) {
+    return {
+      link_allowed: false,
+      reason: 'Hard block: first email in thread, no reply received, total sends < 25. Do not introduce a link.',
+      recommended_step: 'SEND_SOFT_FOLLOWUP',
+      max_links: 0,
+      link_style_note: '',
+    };
+  }
+
+  // ── Allow condition 1: recipient replied ──────────────────
+  if (ctx.reply_received) {
+    return {
+      link_allowed: true,
+      reason: 'Reply received — safest condition. Full permission to include 1 contextual link.',
+      recommended_step: 'SEND_LINK',
+      max_links: 1,
+      link_style_note: LINK_STYLE,
+    };
+  }
+
+  // ── Allow condition 2: conversation established (depth ≥ 2) ─
+  if (ctx.thread_depth >= 2) {
+    return {
+      link_allowed: true,
+      reason: `Thread depth ${ctx.thread_depth} ≥ 2 — at least one follow-up already sent. Conversation established.`,
+      recommended_step: 'SEND_LINK',
+      max_links: 1,
+      link_style_note: LINK_STYLE,
+    };
+  }
+
+  // ── Allow condition 3: domain has engagement history ──────
+  if (ctx.warmup_day >= 3 && ctx.reply_rate >= 0.20) {
+    return {
+      link_allowed: true,
+      reason: `Warmup day ${ctx.warmup_day} ≥ 3 and domain reply rate ${(ctx.reply_rate * 100).toFixed(1)}% ≥ 20%. Domain has engagement history.`,
+      recommended_step: 'SEND_LINK',
+      max_links: 1,
+      link_style_note: LINK_STYLE,
+    };
+  }
+
+  // ── No allow condition met — no reply, depth < 2, insufficient history ─
+  const nextStep = ctx.thread_depth === 0
+    ? 'WAIT'            // nothing sent yet — wait before reaching out
+    : 'SEND_SOFT_FOLLOWUP'; // sent first touch, now send soft follow-up (no link)
+
+  const reason = ctx.thread_depth < 2
+    ? `Thread depth ${ctx.thread_depth} — send a soft follow-up (no link) before introducing a URL`
+    : `Warmup day ${ctx.warmup_day} < 3 or reply rate ${(ctx.reply_rate * 100).toFixed(1)}% < 20% — build more engagement first`;
+
+  return {
+    link_allowed: false,
+    reason,
+    recommended_step: nextStep,
+    max_links: 0,
+    link_style_note: '',
+  };
+}
 
 // ─── FAIL CONDITIONS ───────────────────────────────────────
 export const FAIL_THRESHOLDS = {
@@ -293,6 +398,9 @@ export function checkScalingGate(
   }
 
   // ── 2. Primary-placement override ─────────────────────────
+  // NOTE: placement override allows SENDING to continue — it does NOT
+  // grant link permission. Link policy is governed exclusively by
+  // checkLinkPolicy() based on thread context (reply, depth, day+rate).
   const primaryPlacements = metrics.placement_data.filter(p => p.placement === 'PRIMARY').length;
   const totalPlacements   = metrics.placement_data.length;
   const primaryRate = totalPlacements > 0 ? primaryPlacements / totalPlacements : 0;
@@ -300,14 +408,15 @@ export function checkScalingGate(
 
   // ── 3. Zero reply-rate branching ──────────────────────────
   if (metrics.reply_rate === 0) {
-    // Override: primary placement ≥ 60% → allow despite 0 replies
+    // Override: primary placement ≥ 60% → allow sending despite 0 replies
+    // Link policy is still governed by checkLinkPolicy(), not placement.
     if (placementOverride) {
       return {
         can_send: true, can_scale: false,
         action: 'THROTTLE', status: 'THROTTLE',
-        reason: `Reply rate 0% but primary placement ${(primaryRate * 100).toFixed(0)}% ≥ 60% — placement override active`,
-        send_limit: 5, link_policy: 'ONE_LINK_ALLOWED',
-        next_action: 'Continue sending (placement override). Encourage replies to unlock scaling.',
+        reason: `Reply rate 0% but primary placement ${(primaryRate * 100).toFixed(0)}% ≥ 60% — placement override active (no-link throttle)`,
+        send_limit: 5, link_policy: 'NO_LINKS',
+        next_action: 'Continue sending no-link plain-text messages (placement override). Encourage replies to unlock links.',
       };
     }
 
@@ -388,14 +497,27 @@ export function humanizeSubject(businessName: string, industry: string, city: st
 }
 
 // ─── THREAD CONTINUATION COPY ──────────────────────────────
-export const FOLLOWUP_BRIDGES = [
+// Step 2 (soft follow-up, NO LINK)
+export const FOLLOWUP_BRIDGES_SOFT = [
   "hey — just wanted to follow up on my last message.",
   "hi — circling back on what I sent earlier.",
-  "hey — wanted to share something quick since I had your attention.",
-  "hi — one more thing I wanted to share.",
   "hey — didn't want to leave you hanging after my last note.",
+  "hi — wanted to check if my last message got through.",
+  "hey — just following up in case this got buried.",
+];
+
+// Step 3 (link introduction — only when checkLinkPolicy returns link_allowed = true)
+// Use link_style_note from LinkPolicyResult for the exact copy.
+export const LINK_INTRO_BRIDGES = [
+  "if you're curious, I put together something quick here: {{demo_url}}",
+  "I actually put together a quick example — if you want to take a look: {{demo_url}}",
+  "took a few minutes to mock something up — no pressure at all: {{demo_url}}",
 ];
 
 export function getFollowupBridge(): string {
-  return FOLLOWUP_BRIDGES[Math.floor(Math.random() * FOLLOWUP_BRIDGES.length)];
+  return FOLLOWUP_BRIDGES_SOFT[Math.floor(Math.random() * FOLLOWUP_BRIDGES_SOFT.length)];
+}
+
+export function getLinkIntroBridge(): string {
+  return LINK_INTRO_BRIDGES[Math.floor(Math.random() * LINK_INTRO_BRIDGES.length)];
 }

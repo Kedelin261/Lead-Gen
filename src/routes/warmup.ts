@@ -12,10 +12,13 @@ import {
   validateEmailContent,
   calculateMetrics,
   checkScalingGate,
+  checkLinkPolicy,
   randomDelay,
   getFollowupBridge,
+  getLinkIntroBridge,
   type PlacementRecord,
   type SendRecord,
+  type ThreadContext,
 } from '../lib/warmup-engine';
 import { PROSPECT_DEMOS } from '../lib/prospect-demos';
 
@@ -246,24 +249,115 @@ warmup.post('/placements', async (c) => {
   });
 });
 
+// ─── POST /api/warmup/check-link ──────────────────────────
+// Per-recipient link permission based on thread context.
+// Body: { recipient, reply_received, thread_depth, warmup_day?, reply_rate?, total_sends? }
+warmup.post('/check-link', async (c) => {
+  const body = await c.req.json();
+
+  if (typeof body.recipient !== 'string') {
+    return c.json({ error: 'recipient (string) is required' }, 400);
+  }
+  if (typeof body.reply_received !== 'boolean') {
+    return c.json({ error: 'reply_received (boolean) is required' }, 400);
+  }
+  if (typeof body.thread_depth !== 'number') {
+    return c.json({ error: 'thread_depth (number) is required' }, 400);
+  }
+
+  // Pull domain-level metrics to back-fill optional fields
+  const { DB } = c.env;
+  let engagementRow: { replies: number } | null = null;
+  try {
+    engagementRow = await DB.prepare(
+      `SELECT value FROM settings WHERE key = 'warmup_engagement'`
+    ).first<{ value: string }>().then(r => r ? JSON.parse(r.value) : null);
+  } catch { /* ignore */ }
+
+  const domainReplies   = engagementRow?.replies ?? 0;
+  const domainReplyRate = SESSION_SENDS.length > 0 ? domainReplies / SESSION_SENDS.length : 0;
+
+  const ctx: ThreadContext = {
+    recipient:      body.recipient,
+    reply_received: body.reply_received,
+    thread_depth:   body.thread_depth,
+    warmup_day:     typeof body.warmup_day   === 'number' ? body.warmup_day   : 1,
+    reply_rate:     typeof body.reply_rate   === 'number' ? body.reply_rate   : domainReplyRate,
+    total_sends:    typeof body.total_sends  === 'number' ? body.total_sends  : SESSION_SENDS.length,
+  };
+
+  const policy = checkLinkPolicy(ctx);
+
+  return c.json({
+    link_allowed:     policy.link_allowed,
+    reason:           policy.reason,
+    recommended_step: policy.recommended_step,
+    max_links:        policy.max_links,
+    ...(policy.link_allowed ? {
+      link_style_note: policy.link_style_note,
+      link_intro_copy: getLinkIntroBridge(),
+    } : {}),
+    context_used: {
+      recipient:      ctx.recipient,
+      reply_received: ctx.reply_received,
+      thread_depth:   ctx.thread_depth,
+      warmup_day:     ctx.warmup_day,
+      reply_rate:     `${(ctx.reply_rate * 100).toFixed(1)}%`,
+      total_sends:    ctx.total_sends,
+    },
+    rule: 'ALLOW_IF: reply_received OR thread_depth>=2 OR (warmup_day>=3 AND reply_rate>=20%). HARD_BLOCK_IF: !reply_received AND thread_depth==1 AND total_sends<25',
+  });
+});
+
 // ─── POST /api/warmup/validate-content ────────────────────
+// Also enforces link-policy when thread_context is supplied.
+// Body: { subject, html, warmup_day?, thread_context? }
+//   thread_context: { recipient, reply_received, thread_depth, reply_rate?, total_sends? }
 warmup.post('/validate-content', async (c) => {
-  const { subject, html, warmup_day = 1 } = await c.req.json();
+  const body = await c.req.json();
+  const { subject, html, warmup_day = 1, thread_context } = body;
   const scheduleIdx = Math.min(Number(warmup_day) - 1, WARMUP_SCHEDULE.length - 1);
   const config = WARMUP_SCHEDULE[scheduleIdx];
 
   const result = validateEmailContent(subject, html, config);
+
+  // If thread_context provided, run link-policy and override schedule allowance
+  let linkPolicySummary = null;
+  if (thread_context && typeof thread_context === 'object') {
+    const ctx: ThreadContext = {
+      recipient:      thread_context.recipient      ?? 'unknown',
+      reply_received: thread_context.reply_received ?? false,
+      thread_depth:   thread_context.thread_depth   ?? 1,
+      warmup_day:     Number(warmup_day),
+      reply_rate:     thread_context.reply_rate     ?? 0,
+      total_sends:    thread_context.total_sends    ?? SESSION_SENDS.length,
+    };
+    const policy = checkLinkPolicy(ctx);
+    linkPolicySummary = {
+      link_allowed:     policy.link_allowed,
+      reason:           policy.reason,
+      recommended_step: policy.recommended_step,
+    };
+    // Flag violation: email has a link but policy blocks it
+    const hasLinks = (html?.match(/https?:\/\//g) || []).length > 0;
+    if (!policy.link_allowed && hasLinks) {
+      result.valid = false;
+      result.issues.push(`LINK_POLICY_VIOLATION: ${policy.reason}`);
+    }
+  }
+
   return c.json({
-    valid: result.valid,
-    issues: result.issues,
-    link_count: result.link_count,
+    valid:                 result.valid,
+    issues:                result.issues,
+    link_count:            result.link_count,
     forbidden_words_found: result.has_forbidden_words,
     warmup_day,
     config: {
-      max_links: config.content_rules.max_links,
-      links_allowed: config.links_allowed,
+      max_links:       config.content_rules.max_links,
+      links_allowed:   config.links_allowed,
       forbidden_words: config.content_rules.forbidden_words,
     },
+    ...(linkPolicySummary ? { link_policy: linkPolicySummary } : {}),
   });
 });
 
