@@ -11,6 +11,7 @@ import conversationsRoute from './routes/conversations'
 import settingsRoute from './routes/settings'
 import validationRoute from './routes/validation'
 import warmupRoute from './routes/warmup'
+import microScaleRoute from './routes/micro-scale'
 import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -28,6 +29,7 @@ app.route('/api/conversations', conversationsRoute)
 app.route('/api/settings', settingsRoute)
 app.route('/api/validation', validationRoute)
 app.route('/api/warmup', warmupRoute)
+app.route('/api/micro-scale', microScaleRoute)
 
 // === DEMO VIEWER (public) ===
 // Priority 1: Slug-based prospect demo pages (no DB required)
@@ -106,6 +108,7 @@ app.get('/payments', (c) => c.html(dashboardHTML()))
 app.get('/analytics', (c) => c.html(dashboardHTML()))
 app.get('/settings', (c) => c.html(dashboardHTML()))
 app.get('/validation', (c) => c.html(dashboardHTML()))
+app.get('/micro-scale', (c) => c.html(dashboardHTML()))
 
 export default app
 
@@ -244,6 +247,7 @@ function dashboardHTML() {
     <div style="padding: 12px 16px 4px; font-size: 11px; color: #475569; text-transform: uppercase; font-weight: 700;">System</div>
     <a class="nav-item" href="#" data-page="analytics" onclick="navigate('analytics',this)"><i class="fas fa-chart-bar" style="width:18px"></i> Analytics</a>
     <a class="nav-item" href="#" data-page="validation" id="nav-validation" onclick="navigate('validation',this)" style="border-left:3px solid #f59e0b;"><i class="fas fa-shield-alt" style="width:18px;color:#f59e0b"></i> <span style="color:#f59e0b;font-weight:700;">Validation</span> <span id="nav-val-badge" style="margin-left:auto;background:#f59e0b22;color:#f59e0b;padding:2px 6px;border-radius:9999px;font-size:10px;">MODE</span></a>
+    <a class="nav-item" href="#" data-page="micro-scale" id="nav-micro-scale" onclick="navigate('micro-scale',this)" style="border-left:3px solid #10b981;"><i class="fas fa-rocket" style="width:18px;color:#10b981"></i> <span style="color:#10b981;font-weight:700;">Micro-Scale</span> <span id="nav-micro-badge" style="margin-left:auto;background:#10b98122;color:#10b981;padding:2px 6px;border-radius:9999px;font-size:10px;">LIVE</span></a>
     <a class="nav-item" href="#" data-page="settings" onclick="navigate('settings',this)"><i class="fas fa-cog" style="width:18px"></i> Settings</a>
   </nav>
   <div style="position:absolute;bottom:0;left:0;right:0;padding:16px;border-top:1px solid #334155;">
@@ -369,7 +373,8 @@ function navigate(page, el) {
     payments: 'Payments',
     analytics: 'Analytics',
     settings: 'Settings',
-    validation: 'Validation Mode'
+    validation: 'Validation Mode',
+    'micro-scale': '🚀 Micro-Scale Outreach — Memphis, TN'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
   renderPage(page);
@@ -425,6 +430,7 @@ async function renderPage(page) {
     case 'analytics': await renderAnalytics(); break;
     case 'settings': await renderSettings(); break;
     case 'validation': await renderValidation(); break;
+    case 'micro-scale': await renderMicroScale(); break;
   }
 }
 
@@ -1594,6 +1600,308 @@ async function runTestD() {
   }
 }
 
+
+// ============= MICRO-SCALE =============
+async function renderMicroScale() {
+  const content = document.getElementById('page-content');
+  const data = await api('GET', '/micro-scale/status');
+  if (!data) return;
+
+  const statusColor = { SCALE: '#10b981', ADJUST: '#f59e0b', HOLD: '#ef4444' }[data.next_action] || '#64748b';
+  const trackIcons = { sent: '📤', opened: '👁️', replied: '💬', interested: '⭐', clicked: '🔗', closed: '✅' };
+
+  content.innerHTML = \`
+    <!-- KPI STRIP -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px;">
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Campaign Status</div>
+        <div style="font-size:20px;font-weight:800;color:#10b981;margin-top:6px;">\${data.status}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Memphis, TN</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Leads Scraped</div>
+        <div style="font-size:28px;font-weight:800;color:#60a5fa;margin-top:6px;">\${data.leads_scraped}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">\${data.leads_with_email} have email</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Emails Sent</div>
+        <div style="font-size:28px;font-weight:800;color:#a78bfa;margin-top:6px;">\${data.emails_sent}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Limit: \${data.daily_limits.emails}/day</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Reply Rate</div>
+        <div style="font-size:28px;font-weight:800;color:\${data.reply_rate >= 5 ? '#10b981' : '#f59e0b'};margin-top:6px;">\${data.reply_rate}%</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Goal: ≥ 5% to PASS</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Interested</div>
+        <div style="font-size:28px;font-weight:800;color:#fb923c;margin-top:6px;">\${data.interested_leads}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Goal: ≥ 2 → strong signal</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Deals Closed</div>
+        <div style="font-size:28px;font-weight:800;color:#4ade80;margin-top:6px;">\${data.deals_closed}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">&nbsp;</div>
+      </div>
+    </div>
+
+    <!-- NEXT ACTION BANNER -->
+    <div style="background:\${statusColor}22;border:1px solid \${statusColor};border-radius:12px;padding:16px 20px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700;margin-bottom:4px;">Engine Decision</div>
+        <div style="font-size:22px;font-weight:900;color:\${statusColor};">
+          \${{ SCALE: '🚀 SCALE', ADJUST: '⚠️ ADJUST', HOLD: '⏸️ HOLD' }[data.next_action]}
+        </div>
+        <div style="font-size:13px;color:#94a3b8;margin-top:4px;">
+          \${{ SCALE: 'Reply rate ≥ 5% and 2+ positive responses — ready to scale volume.', ADJUST: 'Emails sent but reply rate below threshold — adjust copy or targeting.', HOLD: 'Insufficient data — send more Day 1 emails first.' }[data.next_action]}
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="sendDay1Batch()" id="btn-send-day1">📤 Send Day 1 Batch</button>
+        <button class="btn btn-ghost" onclick="refreshMicroScale()" style="font-size:13px;">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <!-- SUCCESS METRICS -->
+    <div class="card" style="margin-bottom:24px;">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">📊 Success Metrics (First 20 Leads)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Reply Rate ≥ 5%</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">\${data.pass_reply_rate ? '✅' : '❌'}</span>
+            <span style="font-size:15px;font-weight:700;color:\${data.pass_reply_rate ? '#10b981' : '#ef4444'};">\${data.reply_rate}% / 5%</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">≥ 2 Positive Responses</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">\${data.pass_positive_responses ? '✅' : '❌'}</span>
+            <span style="font-size:15px;font-weight:700;color:\${data.pass_positive_responses ? '#10b981' : '#ef4444'};">\${data.interested_leads} / 2 needed</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Daily Email Limit</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">📧</span>
+            <span style="font-size:15px;font-weight:700;color:#60a5fa;">\${data.emails_sent} / \${data.daily_limits.emails} sent today</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Clicked Demo Link</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">🔗</span>
+            <span style="font-size:15px;font-weight:700;color:#a78bfa;">\${data.clicked_demo} leads clicked</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEADS TABLE -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;">📋 Memphis Leads — Outreach Tracker</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="showAddEmailModal()">➕ Add Email Address</button>
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="exportLeadsCSV()">📥 Export CSV</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Business</th>
+              <th>Industry</th>
+              <th>Phone</th>
+              <th>Email</th>
+              <th>Day</th>
+              <th>Sent</th>
+              <th>Opened</th>
+              <th>Replied</th>
+              <th>Interested</th>
+              <th>Clicked</th>
+              <th>Closed</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            \${data.leads.map(l => \`
+              <tr id="lead-row-\${l.id}">
+                <td>
+                  <div style="font-weight:600;color:#f1f5f9;">\${l.business_name}</div>
+                  <div style="font-size:11px;color:#64748b;">\${l.city}, \${l.state}</div>
+                </td>
+                <td><span style="font-size:12px;color:#94a3b8;">\${l.industry}</span></td>
+                <td><span style="font-size:12px;font-family:monospace;">\${l.phone}</span></td>
+                <td>
+                  \${l.email
+                    ? \`<span style="font-size:12px;color:#34d399;">\${l.email}</span>\`
+                    : \`<button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;" onclick="addEmailInline('\${l.id}','\${l.business_name}')">+ Add Email</button>\`
+                  }
+                </td>
+                <td><span style="background:#1e293b;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:700;">Day \${l.outreach_day}</span></td>
+                \${['sent','opened','replied','interested','clicked','closed'].map(k => \`
+                  <td style="text-align:center;">
+                    <span style="font-size:18px;cursor:\${!l.tracking[k] ? 'pointer' : 'default'};" 
+                          onclick="\${!l.tracking[k] ? \`trackEvent('\${l.id}','\${k}')\` : ''}"
+                          title="\${l.tracking[k] ? k+' ✓' : 'Click to mark '+k}">
+                      \${l.tracking[k] ? '✅' : '⬜'}
+                    </span>
+                  </td>
+                \`).join('')}
+                <td>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    \${l.email_ready && !l.tracking.sent
+                      ? \`<button class="btn btn-primary" style="font-size:11px;padding:3px 8px;" onclick="sendSingleDay1('\${l.id}')">📤 Day 1</button>\`
+                      : ''
+                    }
+                    \${l.email_ready && l.tracking.sent && !l.tracking.replied
+                      ? \`<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;" onclick="sendFollowup('\${l.id}')">🔄 Follow Up</button>\`
+                      : ''
+                    }
+                    <a href="\${l.demo_url}" target="_blank" class="btn btn-ghost" style="font-size:11px;padding:3px 8px;">🔗 Demo</a>
+                  </div>
+                </td>
+              </tr>
+            \`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ADD EMAIL MODAL -->
+    <div class="modal" id="add-email-modal">
+      <div class="modal-box" style="max-width:440px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h3 style="font-size:16px;font-weight:700;">Add Email Address</h3>
+          <button onclick="closeModal('add-email-modal')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:20px;">×</button>
+        </div>
+        <div id="add-email-form-content"></div>
+      </div>
+    </div>
+
+    <!-- SEND RESULT PANEL -->
+    <div id="send-result-panel" style="display:none;margin-top:20px;"></div>
+  \`;
+}
+
+async function sendDay1Batch() {
+  const btn = document.getElementById('btn-send-day1');
+  if (btn) { btn.textContent = '⏳ Sending…'; btn.disabled = true; }
+  try {
+    const r = await api('POST', '/micro-scale/send-day1', { dry_run: false });
+    if (!r) { if (btn) { btn.textContent = '📤 Send Day 1 Batch'; btn.disabled = false; } return; }
+    if (r.sent === 0 && r.needs_emails) {
+      showToast(\`No emails yet — add email addresses to \${r.needs_emails.length} leads first\`, 'warning');
+      const panel = document.getElementById('send-result-panel');
+      if (panel) {
+        panel.style.display = 'block';
+        panel.innerHTML = \`
+          <div class="alert-warning" style="margin-bottom:16px;">
+            <div style="font-weight:700;margin-bottom:8px;">⚠️ No email addresses found for Memphis leads</div>
+            <div style="font-size:13px;color:#e0c070;">OSM data doesn't include email addresses. Add them manually using the "+ Add Email" button next to each lead, or source them from Google Maps / business websites.</div>
+            <div style="margin-top:12px;font-size:12px;">
+              <strong>Leads needing emails (all \${r.needs_emails?.length} leads):</strong><br>
+              \${(r.needs_emails||[]).slice(0,5).map(l => \`• \${l.business_name} — \${l.phone}\`).join('<br>')}
+              \${(r.needs_emails||[]).length > 5 ? \`<br>… and \${r.needs_emails.length - 5} more\` : ''}
+            </div>
+          </div>
+        \`;
+      }
+    } else if (r.sent > 0) {
+      showToast(\`✅ \${r.sent} Day 1 email(s) sent!\`, 'success');
+      await renderMicroScale();
+    }
+  } catch(e) { showToast('Send failed: ' + e.message, 'error'); }
+  if (btn) { btn.textContent = '📤 Send Day 1 Batch'; btn.disabled = false; }
+}
+
+async function sendSingleDay1(leadId) {
+  const r = await api('POST', '/micro-scale/send-day1', { lead_ids: [leadId], dry_run: false });
+  if (!r) return;
+  if (r.sent > 0) { showToast('✅ Day 1 email sent!', 'success'); await renderMicroScale(); }
+  else { showToast('Send failed: ' + (r.results?.[0]?.error || 'unknown'), 'error'); }
+}
+
+async function sendFollowup(leadId) {
+  const r = await api('POST', '/micro-scale/send-followup', { lead_id: leadId, warmup_day: 1, reply_rate: 0, total_sends: 14 });
+  if (!r) return;
+  if (r.sent) { showToast('✅ Follow-up sent!', 'success'); await renderMicroScale(); }
+  else { showToast('Follow-up failed: ' + (r.error || 'unknown'), 'error'); }
+}
+
+async function trackEvent(leadId, event) {
+  const r = await api('POST', '/micro-scale/track', { lead_id: leadId, event });
+  if (!r) return;
+  showToast(\`\${event} marked for \${leadId}\`, 'success');
+  // Update just the cell without full re-render
+  await renderMicroScale();
+}
+
+function addEmailInline(leadId, businessName) {
+  document.getElementById('add-email-form-content').innerHTML = \`
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px;color:#94a3b8;">Business</label>
+      <div style="font-size:14px;font-weight:600;color:#f1f5f9;margin-top:4px;">\${businessName}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:12px;color:#94a3b8;">Email Address</label>
+      <input class="input" id="inline-email-input" type="email" placeholder="owner@business.com" style="width:100%;margin-top:4px;" />
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" style="flex:1;" onclick="saveEmailInline('\${leadId}')">Save & Enable Outreach</button>
+      <button class="btn btn-ghost" onclick="closeModal('add-email-modal')">Cancel</button>
+    </div>
+  \`;
+  openModal('add-email-modal');
+}
+
+function showAddEmailModal() {
+  // Show dropdown of all leads without email
+  document.getElementById('add-email-form-content').innerHTML = \`
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:16px;">Click "+ Add Email" next to any lead in the table to add their email address. Email addresses can be sourced from Google Maps, their Facebook page, or the business website.</div>
+    <button class="btn btn-ghost" onclick="closeModal('add-email-modal')" style="width:100%;">Got it</button>
+  \`;
+  openModal('add-email-modal');
+}
+
+async function saveEmailInline(leadId) {
+  const emailVal = document.getElementById('inline-email-input')?.value?.trim();
+  if (!emailVal || !emailVal.includes('@')) { showToast('Enter a valid email', 'warning'); return; }
+  const r = await api('PATCH', \`/micro-scale/leads/\${leadId}\`, { email: emailVal });
+  if (!r) return;
+  closeModal('add-email-modal');
+  showToast('Email saved — lead ready for outreach!', 'success');
+  await renderMicroScale();
+}
+
+function exportLeadsCSV() {
+  const rows = [['ID','Business','Industry','Phone','Email','City','State','Demo URL','Sent','Replied','Interested','Closed']];
+  document.querySelectorAll('#page-content tbody tr').forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    if (cells.length > 0) {
+      rows.push([
+        tr.id.replace('lead-row-',''),
+        cells[0]?.querySelector('div')?.textContent || '',
+        cells[1]?.textContent?.trim() || '',
+        cells[2]?.textContent?.trim() || '',
+        cells[3]?.textContent?.trim() || '',
+        '', '', '',
+        cells[5]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[7]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[8]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[10]?.textContent?.includes('✅') ? 'YES' : 'NO',
+      ]);
+    }
+  });
+  const csv = rows.map(r => r.map(c => \`"\${c}"\`).join(',')).join('\\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'memphis-leads.csv';
+  a.click();
+}
+
+async function refreshMicroScale() { await renderMicroScale(); showToast('Refreshed', 'info'); }
 
 // Mobile menu
 if (window.innerWidth < 768) {
