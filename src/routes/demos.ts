@@ -52,8 +52,19 @@ demos.post('/generate', async (c) => {
   if (!lead) return c.json({ error: 'Lead not found' }, 404);
 
   // Check for existing demo
-  const existing = await DB.prepare(`SELECT * FROM demos WHERE lead_id = ? AND status = 'ACTIVE'`).bind(lead_id).first();
-  if (existing) return c.json({ demo: existing, message: 'Demo already exists' });
+  const existing = await DB.prepare(`SELECT * FROM demos WHERE lead_id = ? AND status = 'ACTIVE'`).bind(lead_id).first<{
+    id: number; headline: string; subheadline: string; services: string;
+    about_text: string; cta_text: string; demo_url: string; status: string;
+  }>();
+  if (existing) {
+    return c.json({
+      demo: existing,
+      demo_id: existing.id,
+      headline: existing.headline,
+      message: 'Demo already exists',
+      status: 'existing'
+    }, 200);
+  }
 
   try {
     const content = await generateDemoContent(
@@ -87,7 +98,28 @@ demos.post('/generate', async (c) => {
     const demo = await DB.prepare(`SELECT * FROM demos WHERE id = ?`).bind(demoId).first();
     return c.json({ demo, content, message: 'Demo generated successfully' }, 201);
   } catch (error) {
-    return c.json({ error: `Failed to generate demo: ${error}` }, 500);
+    // Log the error and insert a failed demo record for retry tracking
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Demo Generation Error] lead_id=${lead_id}: ${errorMsg}`);
+
+    // Insert a FAILED record so the system can retry
+    try {
+      await DB.prepare(`
+        INSERT INTO demos (lead_id, headline, subheadline, services, about_text, cta_text, status)
+        VALUES (?, 'GENERATION_FAILED', '', '[]', ?, '', 'FAILED')
+      `).bind(
+        lead_id,
+        `Error: ${errorMsg.substring(0, 200)}`
+      ).run();
+    } catch { /* ignore insert error */ }
+
+    return c.json({
+      error: 'Demo generation failed',
+      details: errorMsg,
+      lead_id,
+      retry_available: true,
+      message: 'Error logged. Use /api/demos/:id/regenerate to retry after resolving the underlying issue.'
+    }, 500);
   }
 });
 
