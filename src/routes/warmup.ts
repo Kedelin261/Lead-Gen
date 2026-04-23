@@ -84,38 +84,59 @@ warmup.get('/status', async (c) => {
   const schedule  = WARMUP_SCHEDULE[Math.min(warmupDay - 1, WARMUP_SCHEDULE.length - 1)];
 
   // Per-recipient status
-  const recipientMap: Record<string, { sends: number; rounds: number[]; last_sent: string; has_personalized_link: boolean }> = {};
+  const recipientMap: Record<string, { sends: number; rounds: number[]; last_sent: string; has_personalized_link: boolean; placement: string }> = {};
   for (const s of SESSION_SENDS) {
     if (!recipientMap[s.recipient]) {
-      recipientMap[s.recipient] = { sends: 0, rounds: [], last_sent: '', has_personalized_link: false };
+      recipientMap[s.recipient] = { sends: 0, rounds: [], last_sent: '', has_personalized_link: false, placement: 'UNKNOWN' };
     }
     recipientMap[s.recipient].sends++;
     recipientMap[s.recipient].rounds.push(s.round);
     recipientMap[s.recipient].last_sent = s.sent_at;
     if (s.demo_slug) recipientMap[s.recipient].has_personalized_link = true;
   }
+  // Attach placement data to recipients
+  for (const p of placements) {
+    if (recipientMap[p.recipient]) {
+      recipientMap[p.recipient].placement = p.placement;
+    }
+  }
 
   // Pending personalized follow-ups
+  // Follow-up policy: allow when initial delivered AND placement = PRIMARY or PROMOTIONS
   const allSlugs = Object.keys(PROSPECT_DEMOS);
   const sentSlugs = SESSION_SENDS.filter(s => s.demo_slug).map(s => s.demo_slug!);
   const pendingFollowups = allSlugs
     .filter(slug => !sentSlugs.includes(slug))
     .map(slug => {
       const p = PROSPECT_DEMOS[slug];
+      const recipientStatus = recipientMap[p.email];
+      const placement = recipientStatus?.placement ?? 'UNKNOWN';
+      const followupAllowed = gate.can_send ||
+        placement === 'PRIMARY' ||
+        placement === 'PROMOTIONS';
       return {
         slug,
         business_name: p.business_name,
         email: p.email,
         demo_url: `${APP_URL || 'https://websitedemopro.org'}/demo/${slug}`,
+        placement,
+        followup_allowed: followupAllowed,
+        followup_blocked_reason: followupAllowed ? null : 'Placement unknown or SPAM — confirm delivery before following up',
       };
     });
 
+  const placementSummary = buildPlacementSummary(placements);
+  const primaryRate = placementSummary.total > 0
+    ? (placementSummary.primary / placementSummary.total * 100).toFixed(0) + '%'
+    : 'no_data';
+
   return c.json({
-    status: 'WARMUP_ACTIVE',
+    status: gate.status,          // THROTTLE | PROCEED | HOLD | STOP_ALL
     warmup_day: warmupDay,
     schedule: {
-      max_sends_today: schedule.max_sends_per_day,
-      links_allowed: schedule.links_allowed,
+      max_sends_today: gate.send_limit > 0 ? gate.send_limit : schedule.max_sends_per_day,
+      links_allowed: gate.link_policy === 'ONE_LINK_ALLOWED',
+      link_policy: gate.link_policy,
       min_delay_s: schedule.min_delay_seconds,
       max_delay_s: schedule.max_delay_seconds,
     },
@@ -127,19 +148,26 @@ warmup.get('/status', async (c) => {
       reply_rate: `${(metrics.reply_rate * 100).toFixed(1)}%`,
       spam_rate: `${(metrics.spam_rate * 100).toFixed(1)}%`,
       bounce_rate: `${(metrics.bounce_rate * 100).toFixed(1)}%`,
+      primary_placement_rate: primaryRate,
     },
     gate: {
       can_send: gate.can_send,
       can_scale: gate.can_scale,
       action: gate.action,
+      status: gate.status,
       reason: gate.reason,
+      send_limit: gate.send_limit,
+      link_policy: gate.link_policy,
+      next_action: gate.next_action,
     },
-    placement_summary: buildPlacementSummary(placements),
+    placement_summary: placementSummary,
     recipients: recipientMap,
     pending_personalized_followups: pendingFollowups,
     thresholds: {
-      min_reply_rate_to_send: '20%',
+      throttle_threshold_sends: 25,
+      min_reply_rate_to_proceed: '20%',
       min_reply_rate_to_scale: '40%',
+      primary_placement_override: '60%',
       max_spam_rate: '10%',
       max_bounce_rate: '5%',
     },
@@ -164,11 +192,21 @@ warmup.post('/engagement', async (c) => {
   return c.json({
     recorded: true,
     metrics: {
+      total_sent: metrics.total_sent,
       reply_rate: `${(metrics.reply_rate * 100).toFixed(1)}%`,
       spam_rate: `${(metrics.spam_rate * 100).toFixed(1)}%`,
       bounce_rate: `${(metrics.bounce_rate * 100).toFixed(1)}%`,
     },
-    gate,
+    gate: {
+      status: gate.status,
+      action: gate.action,
+      can_send: gate.can_send,
+      can_scale: gate.can_scale,
+      send_limit: gate.send_limit,
+      link_policy: gate.link_policy,
+      reason: gate.reason,
+      next_action: gate.next_action,
+    },
     scaling_allowed: gate.can_scale,
   });
 });
