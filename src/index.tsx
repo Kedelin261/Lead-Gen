@@ -762,7 +762,7 @@ async function renderPayments() {
     <!-- Stats -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">
       \${renderKPICard('Total Revenue', '\$'+(stats.total_revenue||0).toLocaleString(), 'fas fa-dollar-sign', '#4ade80', 'all time')}
-      \${renderKPICard('Today\'s Revenue', '\$'+(stats.today_revenue||0).toLocaleString(), 'fas fa-calendar-day', '#fbbf24', 'earned')}
+      \${renderKPICard('Revenue Today', '\$'+(stats.today_revenue||0).toLocaleString(), 'fas fa-calendar-day', '#fbbf24', 'earned')}
       \${renderKPICard('Paid Orders', stats.total_paid||0, 'fas fa-check-circle', '#34d399', 'completed')}
       \${renderKPICard('Pending', stats.total_pending||0, 'fas fa-clock', '#f87171', 'awaiting')}
     </div>
