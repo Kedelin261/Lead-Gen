@@ -253,7 +253,7 @@ payments.post('/:id/resend', async (c) => {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: 'Alex <alex@websitedemopro.com>',
+      from: 'Alex <alex@websitedemopro.org>',
       to: [payment.email],
       subject: `Your website is ready — payment link inside`,
       html: `

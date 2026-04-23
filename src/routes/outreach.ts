@@ -32,7 +32,7 @@ outreach.get('/', async (c) => {
 // POST /api/outreach/send-email - Send email to a lead
 outreach.post('/send-email', async (c) => {
   const { DB, RESEND_API_KEY, APP_URL } = c.env;
-  const { lead_id, attempt = 1, from_name = 'Alex', from_email = 'alex@websitedemopro.com' } = await c.req.json();
+  const { lead_id, attempt = 1, from_name = 'Alex', from_email = 'alex@websitedemopro.org' } = await c.req.json();
 
   if (!lead_id) return c.json({ error: 'lead_id required' }, 400);
 
@@ -305,7 +305,7 @@ outreach.post('/sequence', async (c) => {
         await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: 'Alex <alex@websitedemopro.com>', to: [lead.email], subject, text: body })
+          body: JSON.stringify({ from: 'Alex <alex@websitedemopro.org>', to: [lead.email], subject, text: body })
         });
         await DB.prepare(`
           INSERT INTO outreach (lead_id, channel, status, subject, body, sent_at, attempt_number)

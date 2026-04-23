@@ -374,7 +374,7 @@ validation.post('/test-a', async (c) => {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: 'Test <alex@websitedemopro.com>',
+          from: 'Test <alex@websitedemopro.org>',
           to: [te.address],
           subject: '🔍 [DELIVERABILITY TEST] Website Demo Preview',
           text: `This is a deliverability test email sent at ${new Date().toISOString()}.\n\nPlease check: Did this land in your PRIMARY inbox or Spam/Promotions?\n\nReply "INBOX" or "SPAM" to help us track deliverability.\n\nUnsubscribe: Reply UNSUBSCRIBE`,
