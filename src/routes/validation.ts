@@ -986,4 +986,170 @@ validation.post('/initialize', async (c) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/validation/pre-outreach-check — verify all systems ready before outreach
+// ─────────────────────────────────────────────────────────────────────────────
+validation.get('/pre-outreach-check', async (c) => {
+  const { DB, RESEND_API_KEY, TWILIO_ACCOUNT_SID, OPENAI_API_KEY } = c.env as any;
+
+  // Check 1: Email domain (Resend API key configured)
+  const emailDomainOk = !!(RESEND_API_KEY && RESEND_API_KEY.length > 10);
+
+  // Check 2: Twilio credentials
+  const twilioOk = !!(TWILIO_ACCOUNT_SID);
+
+  // Check 3: OpenAI capacity
+  const openAiOk = !!(OPENAI_API_KEY && OPENAI_API_KEY.length > 10);
+
+  // Check 4: Rate limits headroom
+  const state = await getValidationState(DB);
+  const limits = VALIDATION_LIMITS;
+  const today = new Date().toISOString().split('T')[0];
+
+  const emailsToday = await DB.prepare(
+    `SELECT COUNT(*) as cnt FROM outreach WHERE channel='email' AND DATE(created_at)=?`
+  ).bind(today).first<{cnt: number}>();
+  const smsToday = await DB.prepare(
+    `SELECT COUNT(*) as cnt FROM outreach WHERE channel='sms' AND DATE(created_at)=?`
+  ).bind(today).first<{cnt: number}>();
+
+  const emailsRemaining = limits.MAX_EMAILS_PER_DAY - (emailsToday?.cnt || 0);
+  const smsRemaining = limits.MAX_SMS_PER_DAY - (smsToday?.cnt || 0);
+
+  const checks = {
+    email_domain: {
+      ok: emailDomainOk,
+      status: emailDomainOk ? '✅ Resend API key configured' : '❌ Resend API key missing',
+      action: emailDomainOk ? null : 'Set RESEND_API_KEY secret and verify sending domain',
+    },
+    twilio: {
+      ok: twilioOk,
+      status: twilioOk ? '✅ Twilio credentials configured' : '⚠️ Twilio credentials missing',
+      action: twilioOk ? null : 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN secrets',
+    },
+    openai: {
+      ok: openAiOk,
+      status: openAiOk ? '✅ OpenAI API key present (fallback active)' : '⚠️ OpenAI key missing — local fallback only',
+      action: openAiOk ? null : 'Optional: Set OPENAI_API_KEY for AI-generated content',
+    },
+    rate_limits: {
+      ok: emailsRemaining > 0 && smsRemaining > 0,
+      status: `📊 ${emailsRemaining} emails and ${smsRemaining} SMS remaining today`,
+      emails_remaining: emailsRemaining,
+      sms_remaining: smsRemaining,
+    },
+    system_mode: {
+      ok: state.system_mode !== 'PAUSED',
+      status: state.system_mode === 'PAUSED' ? '❌ System PAUSED — resolve issues first' : `✅ System in ${state.system_mode} mode`,
+    },
+  };
+
+  const allCriticalOk = checks.email_domain.ok && checks.rate_limits.ok && checks.system_mode.ok;
+
+  return c.json({
+    ready: allCriticalOk,
+    checks,
+    summary: allCriticalOk
+      ? '✅ All pre-outreach checks passed — system ready to send'
+      : '⚠️ Some checks failed — review before sending',
+    recommendations: Object.values(checks)
+      .filter((ch: any) => !ch.ok && ch.action)
+      .map((ch: any) => ch.action),
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/validation/raise-flag — manually raise a validation flag
+// ─────────────────────────────────────────────────────────────────────────────
+validation.post('/raise-flag', async (c) => {
+  const { DB } = c.env;
+  const body = await c.req.json().catch(() => ({}));
+  const { flag, severity = 'warning', details = '' } = body;
+
+  if (!flag) return c.json({ error: 'flag is required' }, 400);
+
+  const state = await getValidationState(DB);
+  if (!state.active_flags.includes(flag)) {
+    state.active_flags.push(flag);
+  }
+  await saveValidationState(DB, state);
+  await logValidationEvent(DB, 'FLAG_RAISED', { flag, severity, details });
+
+  return c.json({
+    message: `Flag "${flag}" raised`,
+    severity,
+    active_flags: state.active_flags,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/validation/set-state — update validation state fields (admin/test use)
+// ─────────────────────────────────────────────────────────────────────────────
+validation.post('/set-state', async (c) => {
+  const { DB } = c.env;
+  const body = await c.req.json().catch(() => ({}));
+
+  const state = await getValidationState(DB);
+  const updatedState = { ...state, ...body };
+  await saveValidationState(DB, updatedState);
+
+  return c.json({
+    message: 'Validation state updated',
+    state: updatedState,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/validation/check-scaling-restriction — check if action violates validation scope
+// ─────────────────────────────────────────────────────────────────────────────
+validation.post('/check-scaling-restriction', async (c) => {
+  const { DB } = c.env;
+  const body = await c.req.json().catch(() => ({}));
+  const { action, city, niche } = body;
+
+  const state = await getValidationState(DB);
+
+  // Lock city/niche on first use
+  let cityViolation = false;
+  let nicheViolation = false;
+
+  if (city && state.locked_city && state.locked_city !== city) {
+    cityViolation = true;
+  }
+  if (niche && state.locked_niche && state.locked_niche !== niche) {
+    nicheViolation = true;
+  }
+
+  if (cityViolation || nicheViolation) {
+    return c.json({
+      allowed: false,
+      blocked: true,
+      reason: 'VALIDATION PHASE ACTIVE — SCALING BLOCKED',
+      details: [
+        cityViolation ? `Multi-city blocked: locked to ${state.locked_city}, got ${city}` : null,
+        nicheViolation ? `Multi-niche blocked: locked to ${state.locked_niche}, got ${niche}` : null,
+      ].filter(Boolean),
+    }, 409);
+  }
+
+  // Lock on first use if not set
+  let updated = false;
+  if (city && !state.locked_city) {
+    state.locked_city = city;
+    updated = true;
+  }
+  if (niche && !state.locked_niche) {
+    state.locked_niche = niche;
+    updated = true;
+  }
+  if (updated) await saveValidationState(DB, state);
+
+  return c.json({
+    allowed: true,
+    blocked: false,
+    locked_city: state.locked_city,
+    locked_niche: state.locked_niche,
+  });
+});
+
 export default validation;
