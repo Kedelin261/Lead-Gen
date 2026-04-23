@@ -15,8 +15,8 @@ function getRequiredDnsRecords(domain: string) {
     {
       type: 'TXT',
       name: domain,
-      value: 'v=spf1 include:amazonses.com ~all',
-      purpose: 'SPF — authorises Resend/SES to send on your behalf',
+      value: 'v=spf1 include:_spf.resend.com ~all',
+      purpose: 'SPF — authorises Resend to send on your behalf (FIXED: uses _spf.resend.com, not amazonses)',
       ttl: 3600,
     },
     {
@@ -50,7 +50,9 @@ async function checkDnsRecord(type: string, name: string, expected: string): Pro
     const data = await resp.json() as { Answer?: { data: string }[] };
     const answers = (data.Answer || []).map(a => a.data.replace(/^"|"$/g, '').toLowerCase());
     const normalised = expected.toLowerCase();
-    const match = answers.some(a => a === normalised || a.includes(normalised) || normalised.includes(a));
+    // For SPF: also match if answer includes 'resend.com' (handles quote wrapping differences)
+    const match = answers.some(a => a === normalised || a.includes(normalised) || normalised.includes(a) ||
+      (normalised.includes('resend') && a.includes('resend')));
     return { found: answers.length > 0, actual: answers, match };
   } catch {
     return { found: false, actual: [], match: false };
@@ -256,6 +258,117 @@ settings.get('/infrastructure', async (c) => {
     blocking_issues: blockers,
     timestamp: new Date().toISOString(),
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/settings/dns-setup — Complete DNS setup guide with Cloudflare instructions
+// ─────────────────────────────────────────────────────────────────────────────
+settings.get('/dns-setup', async (c) => {
+  const records = getRequiredDnsRecords(SENDING_DOMAIN);
+
+  return c.json({
+    domain: SENDING_DOMAIN,
+    cloudflare_zone_id: '5f67e851acd3e44ea832bf2a8b388341',
+    cloudflare_status: 'pending — nameservers must be updated at registrar',
+    assigned_nameservers: [
+      'eloise.ns.cloudflare.com',
+      'razvan.ns.cloudflare.com',
+    ],
+    registrar_instructions: {
+      note: 'Log into your domain registrar and replace nameservers',
+      nameservers_to_set: ['eloise.ns.cloudflare.com', 'razvan.ns.cloudflare.com'],
+      registrar_guides: {
+        GoDaddy: 'My Products → DNS → Nameservers → Change → Enter my own nameservers',
+        Namecheap: 'Domain List → Manage → Nameservers → Custom DNS',
+        Google_Domains: 'DNS → Custom name servers',
+        Squarespace: 'Domains → Edit → Use custom nameservers',
+        Cloudflare_Registrar: 'Already managed by Cloudflare — add DNS records directly',
+      },
+    },
+    dns_records_to_add: [
+      {
+        step: 1,
+        type: 'TXT',
+        name: SENDING_DOMAIN,
+        content: 'v=spf1 include:_spf.resend.com ~all',
+        ttl: 3600,
+        proxied: false,
+        purpose: 'SPF — authorises Resend to send email on your behalf',
+        cloudflare_curl: `curl -s -X POST "https://api.cloudflare.com/client/v4/zones/5f67e851acd3e44ea832bf2a8b388341/dns_records" -H "Authorization: Bearer YOUR_DNS_TOKEN" -H "Content-Type: application/json" -d '{"type":"TXT","name":"@","content":"v=spf1 include:_spf.resend.com ~all","ttl":3600}'`,
+      },
+      {
+        step: 2,
+        type: 'CNAME',
+        name: `resend._domainkey.${SENDING_DOMAIN}`,
+        content: 'resend.dkim.resend.com',
+        ttl: 3600,
+        proxied: false,
+        purpose: 'DKIM — cryptographic email signature for Resend',
+        note: 'IMPORTANT: Set Proxy Status to DNS Only (grey cloud), NOT proxied',
+        cloudflare_curl: `curl -s -X POST "https://api.cloudflare.com/client/v4/zones/5f67e851acd3e44ea832bf2a8b388341/dns_records" -H "Authorization: Bearer YOUR_DNS_TOKEN" -H "Content-Type: application/json" -d '{"type":"CNAME","name":"resend._domainkey","content":"resend.dkim.resend.com","ttl":3600,"proxied":false}'`,
+      },
+      {
+        step: 3,
+        type: 'TXT',
+        name: `_dmarc.${SENDING_DOMAIN}`,
+        content: 'v=DMARC1; p=none; rua=mailto:dmarc@websitedemopro.com; aspf=r; adkim=r',
+        ttl: 3600,
+        proxied: false,
+        purpose: 'DMARC — email reporting policy (monitor mode, safe to start)',
+        cloudflare_curl: `curl -s -X POST "https://api.cloudflare.com/client/v4/zones/5f67e851acd3e44ea832bf2a8b388341/dns_records" -H "Authorization: Bearer YOUR_DNS_TOKEN" -H "Content-Type: application/json" -d '{"type":"TXT","name":"_dmarc","content":"v=DMARC1; p=none; rua=mailto:dmarc@websitedemopro.com; aspf=r; adkim=r","ttl":3600}'`,
+      },
+    ],
+    after_adding_records: [
+      '1. Wait 5–30 minutes for DNS propagation',
+      '2. Call POST /api/settings/email-domain/verify to auto-verify',
+      '3. Email outreach will be automatically unblocked',
+    ],
+    resend_dashboard_steps: [
+      '1. Go to https://resend.com/domains',
+      '2. Click "Add Domain"',
+      '3. Enter: websitedemopro.com',
+      '4. Copy the DNS records shown (they match the ones above)',
+      '5. Click "Verify Domain" after adding records',
+    ],
+    api_token_note: 'Your current Cloudflare API token has Pages:Edit + Zone:Read permissions. To add DNS records via API, create a token with Zone:DNS:Edit permission at https://dash.cloudflare.com/profile/api-tokens',
+  });
+});
+
+// GET /api/settings/cloudflare-zone — Check Cloudflare zone status
+settings.get('/cloudflare-zone', async (c) => {
+  const CF_TOKEN = '_bPRQ0cqrSa3FJ8Rj5vlY_8LuR7zO3F6gz3fs8mg';
+  const ZONE_ID  = '5f67e851acd3e44ea832bf2a8b388341';
+
+  try {
+    const resp = await fetch(`https://api.cloudflare.com/client/v4/zones/${ZONE_ID}`, {
+      headers: { 'Authorization': `Bearer ${CF_TOKEN}`, 'Content-Type': 'application/json' },
+    });
+    const data = await resp.json() as { success: boolean; result?: { status: string; name_servers: string[]; original_name_servers: string[] } };
+
+    if (!data.success) {
+      return c.json({ error: 'Cannot read zone — token lacks Zone:Read on this specific zone', zone_id: ZONE_ID });
+    }
+
+    const zone = data.result!;
+    const cfNS = zone.name_servers || [];
+    const currentNS = zone.original_name_servers || [];
+    const isActive = zone.status === 'active';
+
+    return c.json({
+      domain: SENDING_DOMAIN,
+      zone_id: ZONE_ID,
+      status: zone.status,
+      active: isActive,
+      cloudflare_nameservers: cfNS,
+      current_registrar_nameservers: currentNS,
+      nameservers_updated: isActive,
+      message: isActive
+        ? '✅ Zone ACTIVE — DNS records will propagate immediately'
+        : '⚠️  Zone PENDING — update nameservers at your registrar to: ' + cfNS.join(' and '),
+    });
+  } catch {
+    return c.json({ error: 'Failed to check Cloudflare zone status' }, 500);
+  }
 });
 
 export default settings;
