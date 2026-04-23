@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Bindings } from '../types';
 import { generateOutreachMessage, generateCallScript } from '../lib/ai';
+import { runOutreachGateChecks, checkAutoPauseTriggers } from '../lib/validation-engine';
 
 const outreach = new Hono<{ Bindings: Bindings }>();
 
@@ -46,6 +47,21 @@ outreach.post('/send-email', async (c) => {
 
   if (!lead) return c.json({ error: 'Lead not found' }, 404);
   if (!lead.email) return c.json({ error: 'Lead has no email' }, 400);
+
+  // ── VALIDATION MODE GATE CHECK ────────────────────────────────────────────
+  const gate = await runOutreachGateChecks(DB, 'email', {
+    RESEND_API_KEY: c.env.RESEND_API_KEY,
+    TWILIO_ACCOUNT_SID: c.env.TWILIO_ACCOUNT_SID,
+    OPENAI_API_KEY: c.env.OPENAI_API_KEY,
+  });
+  if (!gate.allowed) {
+    return c.json({
+      error: gate.errors[0] || 'Outreach blocked by validation mode',
+      blocked_by: gate.blocked_by,
+      errors: gate.errors,
+      warnings: gate.warnings,
+    }, 403);
+  }
 
   // Check rate limits - max 50 emails/day
   const todayEmails = await DB.prepare(`
@@ -128,6 +144,18 @@ outreach.post('/send-sms', async (c) => {
   if (!lead) return c.json({ error: 'Lead not found' }, 404);
   if (!lead.phone) return c.json({ error: 'Lead has no phone' }, 400);
 
+  // ── VALIDATION MODE GATE CHECK ────────────────────────────────────────────
+  const gateSms = await runOutreachGateChecks(DB, 'sms', {
+    TWILIO_ACCOUNT_SID: c.env.TWILIO_ACCOUNT_SID,
+  });
+  if (!gateSms.allowed) {
+    return c.json({
+      error: gateSms.errors[0] || 'SMS outreach blocked by validation mode',
+      blocked_by: gateSms.blocked_by,
+      errors: gateSms.errors,
+    }, 403);
+  }
+
   // Rate limit check - max 30 SMS/day
   const todaySMS = await DB.prepare(`
     SELECT COUNT(*) as count FROM outreach
@@ -177,6 +205,18 @@ outreach.post('/initiate-call', async (c) => {
 
   if (!lead) return c.json({ error: 'Lead not found' }, 404);
   if (!lead.phone) return c.json({ error: 'Lead has no phone' }, 400);
+
+  // ── VALIDATION MODE GATE CHECK ────────────────────────────────────────────
+  const gateCall = await runOutreachGateChecks(DB, 'call', {
+    TWILIO_ACCOUNT_SID: c.env.TWILIO_ACCOUNT_SID,
+  });
+  if (!gateCall.allowed) {
+    return c.json({
+      error: gateCall.errors[0] || 'Call outreach blocked by validation mode',
+      blocked_by: gateCall.blocked_by,
+      errors: gateCall.errors,
+    }, 403);
+  }
 
   // Rate limit check - max 100 calls/day
   const todayCalls = await DB.prepare(`

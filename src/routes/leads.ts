@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Bindings } from '../types';
 import { calculateLeadScore, classifyWebsiteStatus } from '../lib/scoring';
+import { checkLeadCreationLimit, checkCityNicheLock } from '../lib/validation-engine';
 
 const leads = new Hono<{ Bindings: Bindings }>();
 
@@ -77,6 +78,27 @@ leads.post('/', async (c) => {
   const { name, phone, email, address, industry, city, state, website, source = 'manual', notes } = body;
 
   if (!name) return c.json({ error: 'Name is required' }, 400);
+
+  // ── VALIDATION MODE: Daily lead cap ──────────────────────────────────────
+  const leadLimit = await checkLeadCreationLimit(DB);
+  if (!leadLimit.allowed) {
+    return c.json({
+      error: leadLimit.errors[0] || 'Lead creation blocked by validation mode',
+      blocked_by: leadLimit.blocked_by,
+    }, 403);
+  }
+
+  // ── VALIDATION MODE: City/niche lock ─────────────────────────────────────
+  if (city && industry) {
+    const lockCheck = await checkCityNicheLock(DB, city, industry);
+    if (!lockCheck.allowed) {
+      return c.json({
+        error: lockCheck.errors[0] || 'Multi-city/niche blocked in validation mode',
+        blocked_by: lockCheck.blocked_by,
+        errors: lockCheck.errors,
+      }, 403);
+    }
+  }
 
   // DUPLICATE PREVENTION: check by phone OR email
   if (phone || email) {

@@ -9,6 +9,7 @@ import paymentsRoute from './routes/payments'
 import dashboardRoute from './routes/dashboard'
 import conversationsRoute from './routes/conversations'
 import settingsRoute from './routes/settings'
+import validationRoute from './routes/validation'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -23,6 +24,7 @@ app.route('/api/payments', paymentsRoute)
 app.route('/api/dashboard', dashboardRoute)
 app.route('/api/conversations', conversationsRoute)
 app.route('/api/settings', settingsRoute)
+app.route('/api/validation', validationRoute)
 
 // === DEMO VIEWER (public) ===
 app.get('/demo/:slug', async (c) => {
@@ -76,6 +78,7 @@ app.get('/conversations', (c) => c.html(dashboardHTML()))
 app.get('/payments', (c) => c.html(dashboardHTML()))
 app.get('/analytics', (c) => c.html(dashboardHTML()))
 app.get('/settings', (c) => c.html(dashboardHTML()))
+app.get('/validation', (c) => c.html(dashboardHTML()))
 
 export default app
 
@@ -213,6 +216,7 @@ function dashboardHTML() {
     <a class="nav-item" href="#" data-page="payments" onclick="navigate('payments',this)"><i class="fas fa-credit-card" style="width:18px"></i> Payments</a>
     <div style="padding: 12px 16px 4px; font-size: 11px; color: #475569; text-transform: uppercase; font-weight: 700;">System</div>
     <a class="nav-item" href="#" data-page="analytics" onclick="navigate('analytics',this)"><i class="fas fa-chart-bar" style="width:18px"></i> Analytics</a>
+    <a class="nav-item" href="#" data-page="validation" id="nav-validation" onclick="navigate('validation',this)" style="border-left:3px solid #f59e0b;"><i class="fas fa-shield-alt" style="width:18px;color:#f59e0b"></i> <span style="color:#f59e0b;font-weight:700;">Validation</span> <span id="nav-val-badge" style="margin-left:auto;background:#f59e0b22;color:#f59e0b;padding:2px 6px;border-radius:9999px;font-size:10px;">MODE</span></a>
     <a class="nav-item" href="#" data-page="settings" onclick="navigate('settings',this)"><i class="fas fa-cog" style="width:18px"></i> Settings</a>
   </nav>
   <div style="position:absolute;bottom:0;left:0;right:0;padding:16px;border-top:1px solid #334155;">
@@ -337,7 +341,8 @@ function navigate(page, el) {
     conversations: 'Conversations',
     payments: 'Payments',
     analytics: 'Analytics',
-    settings: 'Settings'
+    settings: 'Settings',
+    validation: 'Validation Mode'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
   renderPage(page);
@@ -392,6 +397,7 @@ async function renderPage(page) {
     case 'payments': await renderPayments(); break;
     case 'analytics': await renderAnalytics(); break;
     case 'settings': await renderSettings(); break;
+    case 'validation': await renderValidation(); break;
   }
 }
 
@@ -1201,6 +1207,366 @@ async function init() {
     }
   }, 30000);
 }
+
+// ═══════════════════════════════════════════════════════════
+// VALIDATION MODE PAGE RENDERER
+// ═══════════════════════════════════════════════════════════
+async function renderValidation() {
+  const content = document.getElementById('page-content');
+
+  // Initialize validation tables if not done
+  await api('POST', '/validation/initialize');
+
+  const [stateData, perfData, planData, decisionData] = await Promise.all([
+    api('GET', '/validation/state'),
+    api('GET', '/validation/performance'),
+    api('GET', '/validation/day-plan'),
+    api('GET', '/validation/scaling-decision'),
+  ]);
+
+  if (!stateData) return;
+
+  const s = stateData;
+  const p = perfData || {};
+  const d = decisionData || {};
+
+  const modeColor = s.system_mode === 'SCALE_READY' ? '#4ade80' : s.system_mode === 'PAUSED' ? '#ef4444' : '#f59e0b';
+  const modeBg = s.system_mode === 'SCALE_READY' ? '#052e16' : s.system_mode === 'PAUSED' ? '#450a0a' : '#431407';
+
+  // Update nav badge
+  const badge = document.getElementById('nav-val-badge');
+  if (badge) { badge.textContent = s.system_mode; badge.style.color = modeColor; }
+
+  const flagsHtml = (s.active_flags || []).length > 0
+    ? (s.active_flags || []).map(function(f) { return '<div style="display:flex;align-items:center;justify-content:space-between;background:#450a0a;border:1px solid #991b1b;border-radius:8px;padding:10px 14px;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:8px;"><span style="color:#ef4444;font-size:16px;">🚩</span><span style="color:#f87171;font-weight:600;font-size:13px;">' + f + '</span></div><button onclick="resolveFlag(\'' + f + '\')" class="btn" style="background:#7f1d1d;color:#fca5a5;font-size:11px;padding:4px 10px;">Resolve</button></div>'; }).join('')
+    : '<div style="color:#4ade80;padding:12px;font-size:13px;">✅ No active flags — system healthy</div>';
+
+  const testsHtml = [
+    { key: 'test_a_email', label: 'Test A: Email Deliverability', desc: '≥70% inbox placement', icon: '📧' },
+    { key: 'test_b_sms', label: 'Test B: SMS Delivery', desc: '100% delivery + replies', icon: '📱' },
+    { key: 'test_c_demo', label: 'Test C: Demo Quality', desc: '≥4/5 demos rated YES', icon: '🌐' },
+    { key: 'test_d_leads', label: 'Test D: Live Campaign', desc: '≥5% response rate from 20 leads', icon: '📊' },
+  ].map(function(t) {
+    var passed = s.tests_passed[t.key];
+    var bg = passed ? '#052e16' : '#1e293b';
+    var border = passed ? '#166534' : '#334155';
+    var labelColor = passed ? '#4ade80' : '#f1f5f9';
+    var statusIcon = passed ? '✅' : '⏳';
+    var statusColor = passed ? '#4ade80' : '#64748b';
+    var statusText = passed ? 'PASS' : 'PENDING';
+    return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:10px;padding:16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">' +
+      '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<span style="font-size:22px;">' + t.icon + '</span>' +
+        '<div>' +
+          '<div style="font-weight:700;font-size:14px;color:' + labelColor + ';">' + t.label + '</div>' +
+          '<div style="font-size:12px;color:#94a3b8;margin-top:2px;">' + t.desc + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<span style="font-size:20px;">' + statusIcon + '</span>' +
+        '<span style="font-size:12px;font-weight:700;color:' + statusColor + ';">' + statusText + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  const limitsHtml = [
+    { label: 'Leads/day', used: s.live_counts?.leads_today, max: s.limits?.MAX_LEADS_PER_DAY },
+    { label: 'Emails/day', used: s.live_counts?.emails_today, max: s.limits?.MAX_EMAILS_PER_DAY },
+    { label: 'SMS/day', used: s.live_counts?.sms_today, max: s.limits?.MAX_SMS_PER_DAY },
+    { label: 'Calls/day', used: s.live_counts?.calls_today, max: s.limits?.MAX_CALLS_PER_DAY },
+  ].map(function(l) {
+    var pct = Math.round((l.used / l.max) * 100);
+    var barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#3b82f6';
+    return '<div style="margin-bottom:14px;">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+        '<span style="font-size:13px;color:#94a3b8;">' + l.label + '</span>' +
+        '<span style="font-size:13px;font-weight:700;color:#f1f5f9;">' + l.used + ' / ' + l.max + '</span>' +
+      '</div>' +
+      '<div style="height:8px;background:#334155;border-radius:4px;">' +
+        '<div style="width:' + Math.min(pct,100) + '%;height:100%;background:' + barColor + ';border-radius:4px;transition:width 0.4s;"></div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var currentDay = planData?.validation_day || 1;
+  const dayPlanHtml = (planData?.plan || []).map(function(day) {
+    var isCurrent = day.current;
+    var dayBg = isCurrent ? '#0c1a3a' : '#1e293b';
+    var dayBorder = isCurrent ? '#1e40af' : '#334155';
+    var dayMb = isCurrent ? '10px' : '0';
+    var badgeBg = isCurrent ? '#1e40af' : '#334155';
+    var badgeColor = isCurrent ? '#93c5fd' : '#64748b';
+    var titleColor = isCurrent ? '#93c5fd' : '#94a3b8';
+    var curLabel = isCurrent ? '#60a5fa' : '#475569';
+    var tasksStr = '';
+    if (isCurrent) {
+      tasksStr = '<div style="font-size:12px;color:#64748b;margin-bottom:8px;"><strong style="color:#94a3b8;">Tasks:</strong></div>' +
+        (day.tasks||[]).map(function(t) { return '<div style="font-size:12px;color:#94a3b8;padding:2px 0 2px 16px;">• ' + t + '</div>'; }).join('') +
+        '<div style="margin-top:10px;padding:8px 12px;background:#1e3a5f;border-radius:6px;font-size:12px;"><strong style="color:#60a5fa;">Pass:</strong> <span style="color:#93c5fd;">' + day.pass_condition + '</span></div>';
+    }
+    return '<div style="background:' + dayBg + ';border:1px solid ' + dayBorder + ';border-radius:10px;padding:14px 16px;margin-bottom:8px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + dayMb + ';">' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="background:' + badgeBg + ';color:' + badgeColor + ';width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;">D' + day.day + '</span>' +
+          '<span style="font-weight:700;font-size:13px;color:' + titleColor + ';">' + day.title + '</span>' +
+        '</div>' +
+        '<span style="font-size:11px;color:' + curLabel + ';">' + (isCurrent ? '▶ CURRENT' : '') + '</span>' +
+      '</div>' + tasksStr +
+    '</div>';
+  }).join('');
+
+  var passedConds = (d.passed_conditions||[]).map(function(c) { return '<div style="font-size:13px;color:#4ade80;margin-bottom:4px;">' + c + '</div>'; }).join('');
+  var failedConds = (d.failed_conditions||[]).map(function(c) { return '<div style="font-size:13px;color:#f87171;margin-bottom:4px;">' + c + '</div>'; }).join('');
+  var recsHtml = '';
+  if ((d.recommendations||[]).length > 0) {
+    recsHtml = '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #334155;"><div style="font-size:12px;color:#94a3b8;margin-bottom:6px;font-weight:600;">REQUIRED FIXES:</div>' +
+      (d.recommendations||[]).map(function(r) { return '<div style="font-size:12px;color:#fbbf24;margin-bottom:4px;">→ ' + r + '</div>'; }).join('') + '</div>';
+  }
+  var decBg = d.scaling_allowed ? '#052e16' : '#1e293b';
+  var decBorder = d.scaling_allowed ? '#166534' : '#334155';
+  var decTitleColor = d.scaling_allowed ? '#4ade80' : '#f59e0b';
+  var decTitle = d.scaling_allowed ? '🚀 SCALE_READY' : '🔒 SCALING BLOCKED';
+  const decisionHtml = '<div style="padding:16px;border-radius:10px;background:' + decBg + ';border:1px solid ' + decBorder + ';">' +
+    '<div style="font-size:20px;font-weight:800;color:' + decTitleColor + ';margin-bottom:12px;">' + decTitle + '</div>' +
+    passedConds + failedConds + recsHtml + '</div>';
+
+  var bounceColorVal = parseFloat((p.email?.bounce_rate||'0%').replace('%','')) > 5 ? '#ef4444' : '#4ade80';
+  var responseColorVal = parseFloat(p.leads?.response_rate||'0%') >= 5 ? '#4ade80' : '#ef4444';
+  const perfHtml = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+    '<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;">' +
+      '<div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600;">📧 EMAIL METRICS</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Sent: <strong style="color:#f1f5f9;">' + (p.email?.sent||0) + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Open Rate: <strong style="color:#60a5fa;">' + (p.email?.open_rate||'N/A') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Click Rate: <strong style="color:#a78bfa;">' + (p.email?.click_rate||'N/A') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Bounce Rate: <strong style="color:' + bounceColorVal + '">' + (p.email?.bounce_rate||'0%') + '</strong></div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;">' +
+      '<div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600;">📊 LEAD METRICS</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Total: <strong style="color:#f1f5f9;">' + (p.leads?.total||0) + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Response Rate: <strong style="color:' + responseColorVal + '">' + (p.leads?.response_rate||'0%') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Close Rate: <strong style="color:#fbbf24;">' + (p.leads?.close_rate||'0%') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Demo View Rate: <strong style="color:#a78bfa;">' + (p.demos?.view_rate||'0%') + '</strong></div>' +
+    '</div>' +
+  '</div>';
+
+  var resumeBtn = s.system_mode === 'PAUSED' ? '<button onclick="resumeSystem()" class="btn btn-success" style="font-size:13px;">\u25b6 Resume</button>' : '';
+  var scaleColor = s.scaling_allowed ? '#4ade80' : '#f87171';
+  var scaleText = s.scaling_allowed ? '\u2705 ALLOWED' : '\ud83d\udd12 BLOCKED';
+  content.innerHTML =
+    '<div style="background:' + modeBg + ';border:2px solid ' + modeColor + ';border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">' +
+      '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<span style="font-size:28px;">\ud83d\udee1\ufe0f</span>' +
+        '<div>' +
+          '<div style="font-size:11px;color:' + modeColor + ';font-weight:700;text-transform:uppercase;letter-spacing:1px;">System Mode</div>' +
+          '<div style="font-size:24px;font-weight:900;color:' + modeColor + ';">' + s.system_mode + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Validation Day</div>' +
+          '<div style="font-size:22px;font-weight:800;color:#f1f5f9;">' + s.validation_day + ' / 7</div>' +
+        '</div>' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Scaling</div>' +
+          '<div style="font-size:16px;font-weight:800;color:' + scaleColor + ';">' + scaleText + '</div>' +
+        '</div>' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Locked to</div>' +
+          '<div style="font-size:13px;font-weight:700;color:#f1f5f9;">' + (s.locked_city || 'Not set') + ' / ' + (s.locked_niche || 'Not set') + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          resumeBtn +
+          '<button onclick="runAutoPause()" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;">\ud83d\udd0d Check Triggers</button>' +
+          '<button onclick="advanceDay()" class="btn" style="background:#1e40af;color:#93c5fd;font-size:12px;padding:6px 12px;">Day ' + s.validation_day + ' \u2192 ' + Math.min(7,s.validation_day+1) + ' \u203a</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-bottom:24px;">' +
+      '<div style="grid-column:1/3;">' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">\ud83e\uddea Validation Tests (4 Required)</h3>' +
+          testsHtml +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
+            '<button onclick="runTestA()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udce7 Run Test A</button>' +
+            '<button onclick="runTestB()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udcf1 Run Test B</button>' +
+            '<button onclick="runTestC()" class="btn btn-ghost" style="font-size:12px;">\ud83c\udf10 Score Demos (Test C)</button>' +
+            '<button onclick="runTestD()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udcca Eval Campaign (Test D)</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udea9 Active Flags</h3>' +
+          flagsHtml +
+        '</div>' +
+        '<div class="card">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udcc8 Live Performance Metrics</h3>' +
+          perfHtml +
+        '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udd12 Daily Limits (ENFORCED)</h3>' +
+          '<div style="font-size:11px;color:#475569;margin-bottom:12px;font-style:italic;">VALIDATION PHASE ACTIVE \u2014 Scaling blocked</div>' +
+          limitsHtml +
+          '<div style="padding:10px;background:#0f172a;border-radius:8px;font-size:12px;color:#64748b;margin-top:8px;">' +
+            '\ud83c\udfd9\ufe0f Cities: <strong style="color:#f1f5f9;">1 only</strong> &nbsp;|&nbsp; \ud83c\udff7\ufe0f Niches: <strong style="color:#f1f5f9;">1 only</strong>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+            '<h3 style="font-size:15px;font-weight:700;color:#f1f5f9;">\u2696\ufe0f Scaling Decision</h3>' +
+            '<button onclick="refreshDecision()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px;">Refresh</button>' +
+          '</div>' +
+          decisionHtml +
+          '<div style="display:flex;gap:8px;margin-top:12px;">' +
+            '<button onclick="viewReport()" class="btn btn-primary" style="flex:1;font-size:12px;">\ud83d\udccb Full Report</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udcc5 7-Day Validation Plan</h3>' +
+          dayPlanHtml +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}}
+
+// ─── Validation action helpers ─────────────────────────────────────────────
+async function resolveFlag(flag) {
+  const notes = prompt('Resolution notes for "' + flag + '":');
+  if (notes === null) return;
+  const r = await api('POST', '/validation/resolve-flag', { flag, resolution_notes: notes });
+  if (r) { showToast('Flag "' + flag + '" resolved', 'success'); await renderValidation(); }
+}
+
+async function resumeSystem() {
+  if (!confirm('Resume system from PAUSED state? Ensure root causes are fixed first.')) return;
+  const r = await api('POST', '/validation/resume');
+  if (r) { showToast('System resumed — validation mode active', 'success'); await renderValidation(); }
+}
+
+async function runAutoPause() {
+  const r = await api('POST', '/validation/auto-pause-check');
+  if (r?.triggered) {
+    showToast('Auto-pause triggered: ' + r.reasons.join('; '), 'error');
+  } else {
+    showToast('All auto-pause checks passed — system healthy', 'success');
+  }
+  await renderValidation();
+}
+
+async function advanceDay() {
+  const r = await api('POST', '/validation/advance-day');
+  if (r) { showToast('Advanced to Day ' + r.validation_day, 'info'); await renderValidation(); }
+}
+
+async function refreshDecision() {
+  const r = await api('GET', '/validation/scaling-decision');
+  if (r) {
+    showToast(r.scaling_allowed ? '\ud83d\ude80 SCALE_READY — All conditions met!' : '\ud83d\udd12 Scaling still blocked — conditions not met', r.scaling_allowed ? 'success' : 'warning');
+    await renderValidation();
+  }
+}
+
+async function viewReport() {
+  const r = await api('GET', '/validation/report');
+  if (!r) return;
+  var decBg2 = r.scaling_decision?.allowed ? '#052e16' : '#450a0a';
+  var decColor2 = r.scaling_decision?.allowed ? '#4ade80' : '#f87171';
+  var fixesHtml = '';
+  if (r.required_fixes?.length > 0) {
+    fixesHtml = '<div style="margin-top:12px;"><div style="font-weight:700;color:#f59e0b;margin-bottom:8px;">REQUIRED FIXES:</div>' +
+      (r.required_fixes||[]).map(function(fx) { return '<div style="font-size:12px;color:#fbbf24;margin-bottom:4px;">\u2192 ' + fx + '</div>'; }).join('') +
+      '</div>';
+  }
+  const reportHtml =
+    '<h3 style="margin-bottom:16px;font-size:16px;font-weight:700;">\ud83d\udccb Final Validation Report</h3>' +
+    '<div style="font-size:12px;color:#64748b;margin-bottom:12px;">Generated: ' + r.generated_at + '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#f59e0b;margin-bottom:8px;">DELIVERABILITY</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Email: ' + r.deliverability_status?.test_a_email + ' | SMS: ' + r.deliverability_status?.test_b_sms + '</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Domain Verified: ' + r.deliverability_status?.domain_verified + ' | Twilio: ' + r.deliverability_status?.twilio_configured + '</div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#a78bfa;margin-bottom:8px;">DEMO QUALITY</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Score: ' + r.demo_quality_score?.score + ' | View Rate: ' + r.demo_quality_score?.view_rate + '</div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#34d399;margin-bottom:8px;">RESPONSE RATE</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Rate: ' + r.response_rate?.rate + ' | Responded: ' + r.response_rate?.leads_responded + '/' + r.response_rate?.leads_contacted + '</div>' +
+    '</div>' +
+    '<div style="background:' + decBg2 + ';border-radius:8px;padding:14px;">' +
+      '<div style="font-weight:700;color:' + decColor2 + ';font-size:15px;">' + r.scaling_decision?.verdict + '</div>' +
+    '</div>' + fixesHtml;
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:2000;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = '<div style="background:#1e293b;border:1px solid #334155;border-radius:16px;padding:28px;max-width:600px;width:90%;max-height:90vh;overflow-y:auto;">' +
+    reportHtml +
+    '<button onclick="this.closest(\'.modal-overlay\').remove()" class="btn btn-ghost" style="margin-top:16px;width:100%;">Close</button>' +
+  '</div>';
+  modal.className = 'modal-overlay';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
+async function runTestA() {
+  const inbox = prompt('Test A — Email Deliverability\nHow many of 10 test emails landed in PRIMARY inbox? (enter number 0-10)');
+  if (inbox === null) return;
+  const inboxCount = parseInt(inbox);
+  if (isNaN(inboxCount)) return showToast('Invalid number', 'error');
+  const spam = 10 - inboxCount;
+  const r = await api('POST', '/validation/test-a', {
+    manual_results: { total_sent: 10, inbox_count: inboxCount, spam_count: spam, bounce_count: 0, notes: 'Manual test entry' }
+  });
+  if (r) {
+    showToast('Test A: ' + r.status + ' — ' + r.inbox_rate + ' inbox rate', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidation();
+  }
+}
+
+async function runTestB() {
+  const delivered = prompt('Test B — SMS Delivery\nHow many of 10 SMS were delivered? (enter number 0-10)');
+  if (delivered === null) return;
+  const deliveredCount = parseInt(delivered);
+  if (isNaN(deliveredCount)) return showToast('Invalid number', 'error');
+  const reply = confirm('Did you receive any replies back to the SMS?');
+  const r = await api('POST', '/validation/test-b', {
+    manual_results: { total_sent: 10, delivered_count: deliveredCount, filtered_count: 10 - deliveredCount, reply_received: reply, notes: 'Manual test entry' }
+  });
+  if (r) {
+    showToast('Test B: ' + r.status + ' — ' + r.delivery_rate + ' delivery', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidation();
+  }
+}
+
+async function runTestC() {
+  const demos = await api('GET', '/api/demos');
+  const activeDemos = (demos?.demos || []).filter(function(d) { return d.status === 'ACTIVE'; }).slice(0, 5);
+  if (activeDemos.length === 0) return showToast('No active demos to evaluate — generate some demos first', 'warning');
+
+  let passCount = 0;
+  const scores = [];
+  for (const demo of activeDemos) {
+    const url = demo.demo_url || '';
+    const yn = confirm('Test C — Demo Quality\n\nBusiness: ' + demo.business_name + '\nIndustry: ' + demo.industry + ' | City: ' + demo.city + '\nURL: ' + url + '\n\nDoes this look like a REAL business website worth $500?\n\nOK = YES (pass) | Cancel = NO (fail)');
+    scores.push({ demo_id: demo.id, looks_real: yn, worth_500: yn, notes: yn ? 'Looks professional' : 'Needs improvement' });
+    if (yn) passCount++;
+  }
+
+  const r = await api('POST', '/validation/test-c', { demo_scores: scores });
+  if (r) {
+    showToast('Test C: ' + r.status + ' — ' + r.quality_score + ' demos rated YES', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidation();
+  }
+}
+
+async function runTestD() {
+  if (!confirm('Test D — Calculate response rate from last 7 days of leads?\n\nThis will use your actual DB data.')) return;
+  const r = await api('POST', '/validation/test-d', { use_db_data: true });
+  if (r) {
+    showToast('Test D: ' + r.status + ' — ' + r.response_rate + ' response rate', r.status === 'PASS' ? 'success' : 'warning');
+    await renderValidation();
+  }
+}
+
 
 // Mobile menu
 if (window.innerWidth < 768) {
