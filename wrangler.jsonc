@@ -1,34 +1,17 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "webapp",
+  "name": "leadgen-pro",
   "compatibility_date": "2026-04-13",
   "pages_build_output_dir": "./dist",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ]
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
-  // "ai": {
-  //   "binding": "AI"
-  // }
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "leadgen-pro-production",
+      "database_id": "98615fbb-0b49-4f24-a835-91e4ef7f8ee9"
+    }
+  ],
+  "vars": {
+    "APP_URL": "http://localhost:3000"
+  }
 }

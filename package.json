@@ -9,9 +9,12 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
-    "hono": "^4.12.12"
+    "@stripe/stripe-js": "^9.3.0",
+    "hono": "^4.12.14",
+    "stripe": "^22.0.2"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260423.1",
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
     "vite": "^6.3.5",
