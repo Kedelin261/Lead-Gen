@@ -14,6 +14,7 @@ import warmupRoute from './routes/warmup'
 import microScaleRoute from './routes/micro-scale'
 import integrityRoute from './routes/integrity'
 import isolationRoute from './routes/isolation'
+import engineRoute, { handleScheduledEvent } from './routes/engine'
 import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -34,6 +35,7 @@ app.route('/api/warmup', warmupRoute)
 app.route('/api/micro-scale', microScaleRoute)
 app.route('/api/integrity', integrityRoute)
 app.route('/api/isolation', isolationRoute)
+app.route('/api/engine', engineRoute)
 
 // === DEMO VIEWER (public) ===
 // Priority 1: Slug-based prospect demo pages (no DB required)
@@ -114,8 +116,16 @@ app.get('/settings', (c) => c.html(dashboardHTML()))
 app.get('/validation', (c) => c.html(dashboardHTML()))
 app.get('/micro-scale', (c) => c.html(dashboardHTML()))
 app.get('/isolation', (c) => c.html(dashboardHTML()))
+app.get('/engine', (c) => c.html(dashboardHTML()))
 
 export default app
+
+// === CLOUDFLARE CRON TRIGGER ===
+// Called by Cloudflare's scheduled events (wrangler.jsonc triggers.crons)
+// Runs the autonomous daily outreach engine at 14:00 UTC (9 AM CST)
+export const scheduled = async (_event: unknown, env: Bindings, _ctx: ExecutionContext) => {
+  await handleScheduledEvent(env)
+}
 
 function paymentSuccessHTML() {
   return `<!DOCTYPE html>
@@ -254,6 +264,7 @@ function dashboardHTML() {
     <a class="nav-item" href="#" data-page="validation" id="nav-validation" onclick="navigate('validation',this)" style="border-left:3px solid #f59e0b;"><i class="fas fa-shield-alt" style="width:18px;color:#f59e0b"></i> <span style="color:#f59e0b;font-weight:700;">Validation</span> <span id="nav-val-badge" style="margin-left:auto;background:#f59e0b22;color:#f59e0b;padding:2px 6px;border-radius:9999px;font-size:10px;">MODE</span></a>
     <a class="nav-item" href="#" data-page="micro-scale" id="nav-micro-scale" onclick="navigate('micro-scale',this)" style="border-left:3px solid #10b981;"><i class="fas fa-rocket" style="width:18px;color:#10b981"></i> <span style="color:#10b981;font-weight:700;">Micro-Scale</span> <span id="nav-micro-badge" style="margin-left:auto;background:#10b98122;color:#10b981;padding:2px 6px;border-radius:9999px;font-size:10px;">LIVE</span></a>
     <a class="nav-item" href="#" data-page="isolation" id="nav-isolation" onclick="navigate('isolation',this)" style="border-left:3px solid #a855f7;"><i class="fas fa-shield-virus" style="width:18px;color:#a855f7"></i> <span style="color:#a855f7;font-weight:700;">Env Isolation</span> <span id="nav-isolation-badge" style="margin-left:auto;background:#a855f722;color:#a855f7;padding:2px 6px;border-radius:9999px;font-size:10px;">ACTIVE</span></a>
+    <a class="nav-item" href="#" data-page="engine" id="nav-engine" onclick="navigate('engine',this)" style="border-left:3px solid #f97316;"><i class="fas fa-robot" style="width:18px;color:#f97316"></i> <span style="color:#f97316;font-weight:700;">Auto Engine</span> <span id="nav-engine-badge" style="margin-left:auto;background:#f9731622;color:#f97316;padding:2px 6px;border-radius:9999px;font-size:10px;">DAILY</span></a>
     <a class="nav-item" href="#" data-page="settings" onclick="navigate('settings',this)"><i class="fas fa-cog" style="width:18px"></i> Settings</a>
   </nav>
   <div style="position:absolute;bottom:0;left:0;right:0;padding:16px;border-top:1px solid #334155;">
@@ -381,7 +392,8 @@ function navigate(page, el) {
     settings: 'Settings',
     validation: 'Validation Mode',
     'micro-scale': '🚀 Micro-Scale Outreach — Memphis, TN',
-    'isolation': '🛡️ Environment Isolation Engine'
+    'isolation': '🛡️ Environment Isolation Engine',
+    'engine': '🤖 Autonomous Outreach Engine'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
   renderPage(page);
@@ -439,6 +451,7 @@ async function renderPage(page) {
     case 'validation': await renderValidation(); break;
     case 'micro-scale': await renderMicroScale(); break;
     case 'isolation': await renderIsolation(); break;
+    case 'engine': await renderEngine(); break;
   }
 }
 
@@ -2170,6 +2183,264 @@ async function clearBreachLog() {
   await api('POST', '/isolation/breach/clear', {});
   showToast('Breach log cleared', 'info');
   await renderIsolation();
+}
+
+// ============= AUTONOMOUS ENGINE PAGE =============
+async function renderEngine() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = \`<div style="text-align:center;padding:40px;color:#475569;"><div class="spinner" style="font-size:24px;">🤖</div><div style="margin-top:12px;">Loading engine status...</div></div>\`;
+
+  const [status, schedule, log, queues] = await Promise.all([
+    api('GET', '/engine/status'),
+    api('GET', '/engine/schedule'),
+    api('GET', '/engine/log'),
+    api('GET', '/engine/queues'),
+  ]);
+
+  if (!status) return;
+
+  const isActive = status.engine_status === 'ACTIVE';
+  const gateColor = { PROCEED: '#10b981', THROTTLE: '#f59e0b', HOLD: '#f97316', STOP_ALL: '#ef4444' }[status.gate?.action] || '#64748b';
+  const gateIcon = { PROCEED: '✅', THROTTLE: '⚠️', HOLD: '⏸️', STOP_ALL: '🛑' }[status.gate?.action] || '❓';
+
+  const channelBar = (label, icon, sent, limit, color) => {
+    const pct = Math.min(100, Math.round((sent / limit) * 100));
+    return \`<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span style="font-size:20px;">\${icon}</span>
+        <span style="font-weight:700;color:#f1f5f9;">\${label}</span>
+        <span style="margin-left:auto;font-size:13px;color:#94a3b8;">\${sent} / \${limit}</span>
+      </div>
+      <div style="height:6px;background:#334155;border-radius:3px;overflow:hidden;">
+        <div style="height:100%;width:\${pct}%;background:\${color};border-radius:3px;transition:width 0.5s;"></div>
+      </div>
+      <div style="margin-top:6px;font-size:12px;color:#64748b;">\${limit - sent} remaining today</div>
+    </div>\`;
+  };
+
+  // Last run display
+  const lastRunHtml = status.last_run ? \`
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-top:16px;">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">Last Run</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;font-size:13px;">
+        <div><div style="color:#64748b;">Run ID</div><div style="color:#f1f5f9;font-family:monospace;font-size:11px;">\${status.last_run.run_id}</div></div>
+        <div><div style="color:#64748b;">Started</div><div style="color:#f1f5f9;">\${new Date(status.last_run.started_at).toLocaleString()}</div></div>
+        <div><div style="color:#64748b;">Trigger</div><div style="color:#a78bfa;">\${status.last_run.trigger}</div></div>
+        <div><div style="color:#64748b;">Gate</div><div style="color:\${gateColor};">\${status.last_run.gate_action}</div></div>
+        <div><div style="color:#64748b;">Emails Sent</div><div style="color:#10b981;font-weight:700;">\${status.last_run.emails_sent}</div></div>
+        <div><div style="color:#64748b;">SMS Queued</div><div style="color:#3b82f6;font-weight:700;">\${status.last_run.sms_queued}</div></div>
+        <div><div style="color:#64748b;">Calls Queued</div><div style="color:#f59e0b;font-weight:700;">\${status.last_run.calls_queued}</div></div>
+        <div><div style="color:#64748b;">Errors</div><div style="color:\${status.last_run.errors > 0 ? '#ef4444' : '#10b981'};font-weight:700;">\${status.last_run.errors}</div></div>
+      </div>
+    </div>\` : \`<div style="color:#475569;font-size:13px;margin-top:12px;padding:16px;background:#1e293b;border-radius:8px;text-align:center;">No runs yet — click "Run Engine Now" to execute the first daily run.</div>\`;
+
+  // Schedule display
+  const schedHtml = schedule ? \`
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
+        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Email Plan</div>
+        <div style="font-size:24px;font-weight:800;color:#10b981;">\${schedule.channels?.email?.planned || 0}</div>
+        <div style="font-size:12px;color:#475569;">\${schedule.channels?.email?.day1_ready || 0} Day1 + \${schedule.channels?.email?.followup_ready || 0} followup</div>
+      </div>
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
+        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">SMS Plan</div>
+        <div style="font-size:24px;font-weight:800;color:#3b82f6;">\${schedule.channels?.sms?.planned || 0}</div>
+        <div style="font-size:12px;color:#475569;">\${schedule.channels?.sms?.remaining_quota || 0} quota left</div>
+      </div>
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
+        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Call Plan</div>
+        <div style="font-size:24px;font-weight:800;color:#f59e0b;">\${schedule.channels?.call?.planned || 0}</div>
+        <div style="font-size:12px;color:#475569;">\${schedule.channels?.call?.remaining_quota || 0} quota left</div>
+      </div>
+    </div>\` : '';
+
+  // Run log table
+  const runs = log?.runs || [];
+  const logRows = runs.slice(0, 10).map(r => {
+    const gateCol = { PROCEED: '#10b981', THROTTLE: '#f59e0b', HOLD: '#f97316', STOP_ALL: '#ef4444' }[r.gate_action] || '#64748b';
+    const envBadge = r.env === 'TEST' ? 'background:#f59e0b22;color:#f59e0b;' : 'background:#10b98122;color:#10b981;';
+    return \`<tr style="border-bottom:1px solid #1e293b;">
+      <td style="padding:8px;font-family:monospace;font-size:11px;color:#94a3b8;">\${r.run_id?.slice(-12)}</td>
+      <td style="padding:8px;font-size:12px;">\${new Date(r.started_at).toLocaleString()}</td>
+      <td style="padding:8px;"><span style="padding:2px 8px;border-radius:4px;\${envBadge}font-size:11px;">\${r.env}</span></td>
+      <td style="padding:8px;font-size:12px;color:#a78bfa;">\${r.trigger}</td>
+      <td style="padding:8px;font-weight:700;color:#10b981;">\${r.totals?.emails_sent || 0}</td>
+      <td style="padding:8px;font-weight:700;color:#3b82f6;">\${r.totals?.sms_queued || 0}</td>
+      <td style="padding:8px;font-weight:700;color:#f59e0b;">\${r.totals?.calls_queued || 0}</td>
+      <td style="padding:8px;font-size:12px;color:\${gateCol};font-weight:700;">\${r.gate_action}</td>
+      <td style="padding:8px;font-size:12px;color:\${r.errors?.length > 0 ? '#ef4444' : '#10b981'};">\${r.errors?.length || 0}</td>
+    </tr>\`;
+  }).join('');
+
+  content.innerHTML = \`
+    <!-- Engine Status Header -->
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="flex:1;">
+        <h2 style="color:#f1f5f9;font-size:22px;font-weight:800;margin:0;">🤖 Autonomous Outreach Engine</h2>
+        <p style="color:#64748b;font-size:13px;margin:4px 0 0;">Runs daily at 9:00 AM CST via Cloudflare Cron · Email + SMS + Call</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="engineRunDryRun()" class="btn" style="background:#334155;color:#94a3b8;font-size:13px;padding:8px 14px;">🔍 Dry Run</button>
+        <button onclick="engineRunNow()" class="btn btn-success" style="font-size:13px;padding:8px 16px;">▶ Run Engine Now</button>
+        \${isActive
+          ? \`<button onclick="enginePause()" class="btn" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;font-size:13px;padding:8px 14px;">⏸ Pause</button>\`
+          : \`<button onclick="engineResume()" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;font-size:13px;padding:8px 14px;">▶ Resume</button>\`
+        }
+      </div>
+    </div>
+
+    <!-- Engine State Banner -->
+    <div style="background:\${isActive ? '#10b98111' : '#f9731611'};border:1px solid \${isActive ? '#10b98133' : '#f9731633'};border-radius:10px;padding:14px 18px;display:flex;align-items:center;gap:14px;margin-bottom:20px;">
+      <span style="font-size:24px;">\${isActive ? '🟢' : '🟠'}</span>
+      <div style="flex:1;">
+        <div style="font-weight:700;color:#f1f5f9;">Engine \${isActive ? 'ACTIVE' : 'PAUSED'} · Environment: <span style="color:\${status.env === 'TEST' ? '#f59e0b' : '#10b981'};">\${status.env}</span></div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:2px;">Cron: <code style="color:#a78bfa;">0 14 * * *</code> (daily 14:00 UTC = 9:00 AM CST) · Cloudflare Cron Trigger</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:13px;font-weight:700;color:\${gateColor};">\${gateIcon} Gate: \${status.gate?.action}</div>
+        <div style="font-size:11px;color:#64748b;max-width:220px;">\${status.gate?.reason?.slice(0, 80)}\${status.gate?.reason?.length > 80 ? '...' : ''}</div>
+      </div>
+    </div>
+
+    <!-- Channel Progress Bars -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px;">
+      \${channelBar('Email', '📧', status.channels?.email?.sent_today || 0, status.channels?.email?.limit || 5, '#10b981')}
+      \${channelBar('SMS', '💬', status.channels?.sms?.sent_today || 0, status.channels?.sms?.limit || 5, '#3b82f6')}
+      \${channelBar('Calls', '📞', status.channels?.call?.made_today || 0, status.channels?.call?.limit || 10, '#f59e0b')}
+    </div>
+
+    <!-- Campaign Metrics Row -->
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:20px;">
+      \${[
+        ['Leads', status.campaign_metrics?.leads_total || 0, '#94a3b8'],
+        ['w/ Email', status.campaign_metrics?.leads_with_email || 0, '#60a5fa'],
+        ['Sent', status.campaign_metrics?.emails_sent || 0, '#10b981'],
+        ['Replied', status.campaign_metrics?.replies_received || 0, '#a78bfa'],
+        ['Rate', (status.campaign_metrics?.reply_rate_pct || 0) + '%', '#f59e0b'],
+        ['Interested', status.campaign_metrics?.interested || 0, '#34d399'],
+        ['Closed', status.campaign_metrics?.deals_closed || 0, '#4ade80'],
+      ].map(([label, val, color]) => \`<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:20px;font-weight:800;color:\${color};">\${val}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:2px;">\${label}</div>
+      </div>\`).join('')}
+    </div>
+
+    <!-- Today's Schedule -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">📅 Today's Planned Actions <span style="font-weight:400;font-size:11px;color:#475569;">(as of \${new Date().toLocaleTimeString()})</span></div>
+      \${schedHtml}
+      \${(schedule?.channels?.email?.needs_email?.length || 0) > 0 ? \`<div class="alert-warning" style="margin-top:12px;font-size:12px;"><strong>⚠️ \${schedule.channels.email.needs_email.length} leads need email addresses</strong> before email channel can proceed.<br><span style="color:#94a3b8;">Use PATCH /api/micro-scale/leads/:id to add real business emails.</span></div>\` : ''}
+    </div>
+
+    <!-- Last Run Summary -->
+    \${lastRunHtml}
+
+    <!-- Channel Run Controls -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-top:20px;">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">🎛️ Run Individual Channels</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button onclick="engineRunChannel('email')" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;font-size:13px;">📧 Email Only</button>
+        <button onclick="engineRunChannel('sms')" class="btn" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;font-size:13px;">💬 SMS Only</button>
+        <button onclick="engineRunChannel('call')" class="btn" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;font-size:13px;">📞 Calls Only</button>
+        <button onclick="engineResetDay()" class="btn" style="background:#33415522;color:#94a3b8;border:1px solid #33415544;font-size:13px;">🔄 Reset Daily Counters</button>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:#475569;">SMS and Calls require Twilio credentials. Actions are queued and dispatched when provider is configured.</div>
+    </div>
+
+    <!-- SMS + Call Queues -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px;">
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;">
+        <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;margin-bottom:12px;">💬 SMS Queue (\${queues?.sms_queue?.count || 0})</div>
+        \${(queues?.sms_queue?.items?.slice(0,3) || []).map(s => \`<div style="border-bottom:1px solid #334155;padding:8px 0;font-size:12px;">
+          <div style="color:#f1f5f9;font-weight:600;">\${s.business_name}</div>
+          <div style="color:#94a3b8;">\${s.phone}</div>
+          <div style="color:#475569;margin-top:2px;font-size:11px;">\${s.message?.slice(0,70)}...</div>
+        </div>\`).join('') || \`<div style="color:#475569;font-size:13px;text-align:center;padding:16px;">Queue empty</div>\`}
+      </div>
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;">
+        <div style="font-size:13px;font-weight:700;color:#f59e0b;text-transform:uppercase;margin-bottom:12px;">📞 Call Queue (\${queues?.call_queue?.count || 0})</div>
+        \${(queues?.call_queue?.items?.slice(0,3) || []).map(c => \`<div style="border-bottom:1px solid #334155;padding:8px 0;font-size:12px;">
+          <div style="color:#f1f5f9;font-weight:600;">\${c.business_name}</div>
+          <div style="color:#94a3b8;">\${c.phone}</div>
+          <div style="color:#475569;margin-top:2px;font-size:11px;">\${c.script?.slice(0,70)}...</div>
+        </div>\`).join('') || \`<div style="color:#475569;font-size:13px;text-align:center;padding:16px;">Queue empty</div>\`}
+      </div>
+    </div>
+
+    <!-- Run History Log -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-top:20px;overflow-x:auto;">
+      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">📋 Run History (\${runs.length} runs)</div>
+      \${runs.length === 0 ? '<div style="color:#475569;text-align:center;padding:24px;font-size:13px;">No runs yet. Click "Run Engine Now" to start.</div>' : \`
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="color:#475569;font-size:11px;text-transform:uppercase;">
+          <th style="padding:6px 8px;text-align:left;">Run ID</th>
+          <th style="padding:6px 8px;text-align:left;">Started</th>
+          <th style="padding:6px 8px;text-align:left;">Env</th>
+          <th style="padding:6px 8px;text-align:left;">Trigger</th>
+          <th style="padding:6px 8px;text-align:left;">📧</th>
+          <th style="padding:6px 8px;text-align:left;">💬</th>
+          <th style="padding:6px 8px;text-align:left;">📞</th>
+          <th style="padding:6px 8px;text-align:left;">Gate</th>
+          <th style="padding:6px 8px;text-align:left;">Errors</th>
+        </tr></thead>
+        <tbody>\${logRows}</tbody>
+      </table>\`}
+    </div>
+
+    <!-- Isolation Status -->
+    <div style="background:#1e293b;border:1px solid #a855f722;border-radius:10px;padding:16px;margin-top:20px;">
+      <div style="font-size:13px;font-weight:700;color:#a855f7;text-transform:uppercase;margin-bottom:10px;">🛡️ Environment Isolation Active</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;">
+        \${Object.entries(status.isolation_rules || {}).map(([k,v]) => \`<div style="display:flex;align-items:center;gap:6px;color:\${v ? '#10b981' : '#ef4444'};"><span>\${v ? '✅' : '❌'}</span><span>\${k.replace(/_/g,' ')}</span></div>\`).join('')}
+      </div>
+    </div>
+  \`;
+}
+
+async function engineRunNow() {
+  if (!confirm('Run the autonomous engine now? This will send real emails if leads have email addresses and RESEND_API_KEY is configured.')) return;
+  showToast('Running engine...', 'info');
+  const r = await api('POST', '/engine/run', { dry_run: false });
+  if (r) {
+    showToast(\`Run complete: \${r.totals?.emails_sent || 0} emails, \${r.totals?.sms_queued || 0} SMS, \${r.totals?.calls_queued || 0} calls\`, 'success');
+    await renderEngine();
+  }
+}
+
+async function engineRunDryRun() {
+  showToast('Running dry run...', 'info');
+  const r = await api('POST', '/engine/run', { dry_run: true });
+  if (r) {
+    showToast(\`Dry run: would send \${r.totals?.emails_sent || 0} emails, \${r.totals?.sms_queued || 0} SMS, \${r.totals?.calls_queued || 0} calls\`, 'warning');
+    await renderEngine();
+  }
+}
+
+async function engineRunChannel(channel) {
+  const dryRun = !confirm(\`Run \${channel.toUpperCase()} channel now (real sends)? Click Cancel for dry run.\`);
+  showToast(\`Running \${channel} channel\${dryRun ? ' (dry run)' : ''}...\`, 'info');
+  const r = await api('POST', '/engine/run-channel', { channel, dry_run: dryRun });
+  if (r) {
+    showToast(\`\${channel} run complete\`, 'success');
+    await renderEngine();
+  }
+}
+
+async function enginePause() {
+  const reason = prompt('Pause reason (optional):') || 'Manual pause';
+  const r = await api('POST', '/engine/pause', { reason });
+  if (r) { showToast('Engine paused', 'warning'); await renderEngine(); }
+}
+
+async function engineResume() {
+  const r = await api('POST', '/engine/resume', {});
+  if (r) { showToast('Engine resumed — will run at next cron trigger', 'success'); await renderEngine(); }
+}
+
+async function engineResetDay() {
+  if (!confirm('Reset daily counters for today? This allows re-running today\'s sends.')) return;
+  const r = await api('POST', '/engine/reset-day', {});
+  if (r) { showToast('Daily counters reset', 'info'); await renderEngine(); }
 }
 
 // Mobile menu
