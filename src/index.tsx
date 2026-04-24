@@ -13,6 +13,7 @@ import validationRoute from './routes/validation'
 import warmupRoute from './routes/warmup'
 import microScaleRoute from './routes/micro-scale'
 import integrityRoute from './routes/integrity'
+import isolationRoute from './routes/isolation'
 import { getProspectBySlug, renderProspectDemoHTML } from './lib/prospect-demos'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -32,6 +33,7 @@ app.route('/api/validation', validationRoute)
 app.route('/api/warmup', warmupRoute)
 app.route('/api/micro-scale', microScaleRoute)
 app.route('/api/integrity', integrityRoute)
+app.route('/api/isolation', isolationRoute)
 
 // === DEMO VIEWER (public) ===
 // Priority 1: Slug-based prospect demo pages (no DB required)
@@ -111,6 +113,7 @@ app.get('/analytics', (c) => c.html(dashboardHTML()))
 app.get('/settings', (c) => c.html(dashboardHTML()))
 app.get('/validation', (c) => c.html(dashboardHTML()))
 app.get('/micro-scale', (c) => c.html(dashboardHTML()))
+app.get('/isolation', (c) => c.html(dashboardHTML()))
 
 export default app
 
@@ -250,6 +253,7 @@ function dashboardHTML() {
     <a class="nav-item" href="#" data-page="analytics" onclick="navigate('analytics',this)"><i class="fas fa-chart-bar" style="width:18px"></i> Analytics</a>
     <a class="nav-item" href="#" data-page="validation" id="nav-validation" onclick="navigate('validation',this)" style="border-left:3px solid #f59e0b;"><i class="fas fa-shield-alt" style="width:18px;color:#f59e0b"></i> <span style="color:#f59e0b;font-weight:700;">Validation</span> <span id="nav-val-badge" style="margin-left:auto;background:#f59e0b22;color:#f59e0b;padding:2px 6px;border-radius:9999px;font-size:10px;">MODE</span></a>
     <a class="nav-item" href="#" data-page="micro-scale" id="nav-micro-scale" onclick="navigate('micro-scale',this)" style="border-left:3px solid #10b981;"><i class="fas fa-rocket" style="width:18px;color:#10b981"></i> <span style="color:#10b981;font-weight:700;">Micro-Scale</span> <span id="nav-micro-badge" style="margin-left:auto;background:#10b98122;color:#10b981;padding:2px 6px;border-radius:9999px;font-size:10px;">LIVE</span></a>
+    <a class="nav-item" href="#" data-page="isolation" id="nav-isolation" onclick="navigate('isolation',this)" style="border-left:3px solid #a855f7;"><i class="fas fa-shield-virus" style="width:18px;color:#a855f7"></i> <span style="color:#a855f7;font-weight:700;">Env Isolation</span> <span id="nav-isolation-badge" style="margin-left:auto;background:#a855f722;color:#a855f7;padding:2px 6px;border-radius:9999px;font-size:10px;">ACTIVE</span></a>
     <a class="nav-item" href="#" data-page="settings" onclick="navigate('settings',this)"><i class="fas fa-cog" style="width:18px"></i> Settings</a>
   </nav>
   <div style="position:absolute;bottom:0;left:0;right:0;padding:16px;border-top:1px solid #334155;">
@@ -376,7 +380,8 @@ function navigate(page, el) {
     analytics: 'Analytics',
     settings: 'Settings',
     validation: 'Validation Mode',
-    'micro-scale': '🚀 Micro-Scale Outreach — Memphis, TN'
+    'micro-scale': '🚀 Micro-Scale Outreach — Memphis, TN',
+    'isolation': '🛡️ Environment Isolation Engine'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
   renderPage(page);
@@ -433,6 +438,7 @@ async function renderPage(page) {
     case 'settings': await renderSettings(); break;
     case 'validation': await renderValidation(); break;
     case 'micro-scale': await renderMicroScale(); break;
+    case 'isolation': await renderIsolation(); break;
   }
 }
 
@@ -1904,6 +1910,267 @@ function exportLeadsCSV() {
 }
 
 async function refreshMicroScale() { await renderMicroScale(); showToast('Refreshed', 'info'); }
+
+// ============= ENVIRONMENT ISOLATION PAGE =============
+async function renderIsolation() {
+  const content = document.getElementById('page-content');
+  const [isoData, metricsData, queueData, breachData] = await Promise.all([
+    api('GET', '/isolation/status'),
+    api('GET', '/isolation/metrics'),
+    api('GET', '/isolation/queue'),
+    api('GET', '/isolation/breach/log'),
+  ]);
+
+  if (!isoData) return;
+
+  const env = isoData.current_env || 'PRODUCTION';
+  const envColor = env === 'TEST' ? '#f59e0b' : '#10b981';
+  const envBg   = env === 'TEST' ? '#431407' : '#052e16';
+  const envBorder = env === 'TEST' ? '#92400e' : '#166534';
+
+  const tm = metricsData?.TEST || {};
+  const pm = metricsData?.PRODUCTION || {};
+
+  const rulesHtml = Object.entries(isoData.isolation_rules || {}).map(([key, val]) => {
+    const r = val;
+    return \`<div style="display:flex;align-items:flex-start;gap:12px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:8px;margin-bottom:8px;">
+      <span style="font-size:20px;margin-top:2px;">✅</span>
+      <div>
+        <div style="font-weight:700;font-size:13px;color:#f1f5f9;">\${r.rule || key}</div>
+        \${r.test_pattern ? \`<div style="font-size:11px;color:#64748b;margin-top:4px;">TEST: <code style="color:#f59e0b;">\${r.test_pattern}</code> &nbsp;|&nbsp; PROD: <code style="color:#10b981;">\${r.prod_pattern}</code></div>\` : ''}
+      </div>
+    </div>\`;
+  }).join('');
+
+  const breaches = breachData?.breaches || [];
+  const breachHtml = breaches.length === 0
+    ? '<div style="color:#10b981;font-size:13px;padding:12px;">✅ No breach events recorded</div>'
+    : breaches.slice(0, 5).map(b => \`<div style="padding:10px;background:#450a0a;border:1px solid #991b1b;border-radius:8px;margin-bottom:6px;font-size:12px;">
+        <div style="color:#f87171;font-weight:700;">🚨 \${b.reason}</div>
+        <div style="color:#94a3b8;margin-top:4px;">Lead: \${b.lead_id} — \${b.lead_email}</div>
+        <div style="color:#475569;margin-top:2px;">\${new Date(b.timestamp).toLocaleString()}</div>
+      </div>\`).join('');
+
+  const queueJobs = queueData?.jobs || [];
+  const queueHtml = queueJobs.length === 0
+    ? '<div style="color:#64748b;font-size:13px;padding:12px;">Queue is empty</div>'
+    : queueJobs.map(j => \`<div style="padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="color:#f1f5f9;font-weight:600;">\${j.action}</div>
+          <div style="color:#64748b;">job.env=<span style="color:\${j.env === 'TEST' ? '#f59e0b' : '#10b981'};">\${j.env}</span> &nbsp;|&nbsp; lead: \${j.lead_id || '—'}</div>
+        </div>
+        <span class="badge" style="background:\${j.will_execute ? '#052e16' : '#431407'};color:\${j.will_execute ? '#4ade80' : '#f59e0b'};padding:3px 8px;border-radius:9999px;font-size:11px;">\${j.will_execute ? '▶ EXECUTE' : '⏭ SKIP'}</span>
+      </div>\`).join('');
+
+  content.innerHTML = \`
+    <!-- ISOLATION STATUS BANNER -->
+    <div style="background:\${envBg};border:2px solid \${envBorder};border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <span style="font-size:32px;">🛡️</span>
+        <div>
+          <div style="font-size:11px;color:\${envColor};font-weight:700;text-transform:uppercase;letter-spacing:1px;">Isolation Status</div>
+          <div style="font-size:22px;font-weight:900;color:\${envColor};">ENVIRONMENT_ISOLATION_ACTIVE</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:2px;">
+            Current ENV: <strong style="color:\${envColor};">\${env}</strong> &nbsp;·&nbsp; test_safe: ✅ &nbsp;·&nbsp; production_safe: ✅
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn" style="background:\${env === 'TEST' ? '#1e40af' : '#92400e'};color:white;font-size:12px;" onclick="switchIsolationEnv('\${env === 'TEST' ? 'PRODUCTION' : 'TEST'}')">
+          Switch to \${env === 'TEST' ? 'PRODUCTION' : 'TEST'}
+        </button>
+        <button class="btn btn-ghost" style="font-size:12px;" onclick="renderIsolation()">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <!-- OUTPUT JSON -->
+    <div class="card" style="margin-bottom:24px;border-color:#a855f7;">
+      <div style="font-size:14px;font-weight:700;color:#a855f7;margin-bottom:10px;">📦 Canonical Output JSON (Section 7)</div>
+      <pre style="background:#0f172a;border-radius:8px;padding:16px;font-size:12px;color:#a3e635;overflow-x:auto;">\${JSON.stringify({
+        status: 'ENVIRONMENT_ISOLATION_ACTIVE',
+        mode: env,
+        test_emails_blocked_in_production: env === 'PRODUCTION',
+        test_safe: true,
+        production_safe: true,
+      }, null, 2)}</pre>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+      <!-- RULES -->
+      <div class="card">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">⚙️ Active Isolation Rules</div>
+        \${rulesHtml}
+      </div>
+
+      <!-- METRICS SEPARATION -->
+      <div class="card">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">📊 Separated Metrics (Rule 5)</div>
+        <div style="margin-bottom:14px;">
+          <div style="font-size:11px;color:#f59e0b;font-weight:700;text-transform:uppercase;margin-bottom:8px;">🧪 TEST Environment</div>
+          <div style="background:#0f172a;border-radius:8px;padding:12px;font-size:13px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>Sent: <strong style="color:#f1f5f9;">\${tm.emails_sent || 0}</strong></div>
+              <div>Replied: <strong style="color:#10b981;">\${tm.emails_replied || 0}</strong></div>
+              <div>Opened: <strong style="color:#60a5fa;">\${tm.emails_opened || 0}</strong></div>
+              <div>Clicked: <strong style="color:#a78bfa;">\${tm.emails_clicked || 0}</strong></div>
+            </div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155;">
+              Reply Rate: <strong style="color:\${(tm.reply_rate||0) >= 5 ? '#10b981' : '#f59e0b'};">\${tm.reply_rate || 0}%</strong>
+              &nbsp;·&nbsp; Breaches: <strong style="color:\${(tm.breach_events||0) > 0 ? '#ef4444' : '#4ade80'};">\${tm.breach_events || 0}</strong>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#10b981;font-weight:700;text-transform:uppercase;margin-bottom:8px;">✅ PRODUCTION Environment</div>
+          <div style="background:#0f172a;border-radius:8px;padding:12px;font-size:13px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>Sent: <strong style="color:#f1f5f9;">\${pm.emails_sent || 0}</strong></div>
+              <div>Replied: <strong style="color:#10b981;">\${pm.emails_replied || 0}</strong></div>
+              <div>Opened: <strong style="color:#60a5fa;">\${pm.emails_opened || 0}</strong></div>
+              <div>Clicked: <strong style="color:#a78bfa;">\${pm.emails_clicked || 0}</strong></div>
+            </div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155;">
+              Reply Rate: <strong style="color:\${(pm.reply_rate||0) >= 5 ? '#10b981' : '#ef4444'};">\${pm.reply_rate || 0}%</strong>
+              &nbsp;·&nbsp; Breaches: <strong style="color:\${(pm.breach_events||0) > 0 ? '#ef4444' : '#4ade80'};">\${pm.breach_events || 0}</strong>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;padding:8px;background:#0c1a3a;border-radius:6px;font-size:11px;color:#60a5fa;">
+          ℹ️ Metrics are never combined across environments.
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+      <!-- BREACH LOG -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-size:14px;font-weight:700;color:#f1f5f9;">🚨 Breach Log (Rule 6 Hard Stop)</div>
+          \${breaches.length > 0 ? \`<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="clearBreachLog()">Clear</button>\` : ''}
+        </div>
+        \${breachHtml}
+        <div style="margin-top:8px;font-size:11px;color:#475569;">Total breach events: <strong style="color:\${breaches.length > 0 ? '#ef4444' : '#4ade80'};">\${breachData?.total_breaches || 0}</strong></div>
+      </div>
+
+      <!-- JOB QUEUE -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-size:14px;font-weight:700;color:#f1f5f9;">📋 Job Queue (Rule 1 Isolation)</div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="enqueueTestJob()">+ Enqueue Test</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;" onclick="processQueue()">▶ Process</button>
+          </div>
+        </div>
+        \${queueHtml}
+        <div style="margin-top:8px;font-size:11px;color:#475569;">Queue depth: \${queueData?.queue_depth || 0} job(s)</div>
+      </div>
+    </div>
+
+    <!-- PIPELINE CHECK TOOL -->
+    <div class="card" style="margin-bottom:24px;">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">🔒 Pipeline Guard (Rule 2 + 6) — Quick Check</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+        <div><label style="font-size:12px;color:#94a3b8;">Lead ID</label>
+          <input class="input" id="pg-lead-id" placeholder="memphis-001" style="width:100%;margin-top:4px;"></div>
+        <div><label style="font-size:12px;color:#94a3b8;">Email</label>
+          <input class="input" id="pg-email" placeholder="owner@business.com" style="width:100%;margin-top:4px;"></div>
+        <div><label style="font-size:12px;color:#94a3b8;">Lead Type</label>
+          <select class="select" id="pg-lead-type" style="width:100%;margin-top:4px;">
+            <option value="REAL">REAL</option>
+            <option value="TEST">TEST</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="runPipelineCheck()" style="white-space:nowrap;">Check Pipeline</button>
+      </div>
+      <div id="pg-result" style="margin-top:12px;display:none;"></div>
+    </div>
+
+    <!-- DEMO URL VALIDATOR -->
+    <div class="card">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">🌐 Demo URL Validator (Rule 3)</div>
+      <div style="background:#0f172a;border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:#94a3b8;">
+        <strong style="color:#f59e0b;">TEST</strong> env → URLs must contain <code style="color:#fbbf24;">/demo/test/</code> &nbsp;|&nbsp;
+        <strong style="color:#10b981;">PRODUCTION</strong> env → URLs must NOT contain <code style="color:#4ade80;">/test/</code>
+      </div>
+      <div style="display:flex;gap:12px;align-items:end;">
+        <div style="flex:1;"><label style="font-size:12px;color:#94a3b8;">Demo URL to validate</label>
+          <input class="input" id="demo-url-input" placeholder="https://websitedemopro.org/demo/dryve-cleaners-memphis" style="width:100%;margin-top:4px;"></div>
+        <button class="btn btn-primary" onclick="checkDemoUrl()" style="white-space:nowrap;">Validate URL</button>
+      </div>
+      <div id="demo-url-result" style="margin-top:12px;display:none;"></div>
+    </div>
+  \`;
+}
+
+async function switchIsolationEnv(mode) {
+  const r = await api('POST', '/integrity/env', { mode });
+  if (r) {
+    showToast(\`Switched to \${r.mode}\`, r.mode === 'TEST' ? 'warning' : 'success');
+    await renderIsolation();
+  }
+}
+
+async function runPipelineCheck() {
+  const leadId = document.getElementById('pg-lead-id')?.value?.trim();
+  const email   = document.getElementById('pg-email')?.value?.trim();
+  const leadType = document.getElementById('pg-lead-type')?.value;
+  if (!leadId || !email) { showToast('Fill in lead ID and email', 'warning'); return; }
+
+  const r = await api('POST', '/isolation/pipeline/check', {
+    lead_id: leadId, lead_email: email, lead_type: leadType,
+  });
+
+  const result = document.getElementById('pg-result');
+  if (!r || !result) return;
+  result.style.display = 'block';
+
+  if (r.status === 'ENVIRONMENT_BREACH') {
+    result.innerHTML = \`<div class="alert-error"><strong>🚨 ENVIRONMENT_BREACH — All sends halted!</strong><br>\${r.detail}</div>\`;
+  } else if (r.send_blocked) {
+    result.innerHTML = \`<div class="alert-warning"><strong>⚠️ PIPELINE_ENV_MISMATCH — Send blocked</strong><br>\${r.reason}</div>\`;
+  } else {
+    result.innerHTML = \`<div class="alert-success"><strong>✅ Pipeline approved</strong><br>Lead environment matches current pipeline — send allowed.</div>\`;
+  }
+}
+
+async function checkDemoUrl() {
+  const url = document.getElementById('demo-url-input')?.value?.trim();
+  if (!url) { showToast('Enter a demo URL', 'warning'); return; }
+
+  const r = await api('POST', '/isolation/demo/check-url', { url });
+  const result = document.getElementById('demo-url-result');
+  if (!r || !result) return;
+  result.style.display = 'block';
+
+  if (r.valid) {
+    result.innerHTML = \`<div class="alert-success"><strong>✅ Valid for \${r.env} environment</strong><br>\${r.reason}</div>\`;
+  } else {
+    result.innerHTML = \`<div class="alert-error"><strong>❌ Invalid for \${r.env} environment</strong><br>\${r.reason}<br><small style="color:#f87171;margin-top:4px;display:block;">Expected: <code>\${r.expected_pattern}</code></small></div>\`;
+  }
+}
+
+async function enqueueTestJob() {
+  const env = (await api('GET', '/integrity/env'))?.mode || 'PRODUCTION';
+  const r = await api('POST', '/isolation/queue/enqueue', {
+    action: 'SEND_EMAIL_DAY1', env, lead_id: 'memphis-test', email: 'test@example.com',
+  });
+  if (r?.enqueued) { showToast(\`Job enqueued (env=\${r.job?.env})\`, 'success'); await renderIsolation(); }
+}
+
+async function processQueue() {
+  const r = await api('POST', '/isolation/queue/process', {});
+  if (r) {
+    showToast(\`Processed: \${r.executed} executed, \${r.skipped} ENV_MISMATCH_SKIPPED\`, r.skipped > 0 ? 'warning' : 'success');
+    await renderIsolation();
+  }
+}
+
+async function clearBreachLog() {
+  if (!confirm('Clear all breach events from the log?')) return;
+  await api('POST', '/isolation/breach/clear', {});
+  showToast('Breach log cleared', 'info');
+  await renderIsolation();
+}
 
 // Mobile menu
 if (window.innerWidth < 768) {

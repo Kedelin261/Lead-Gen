@@ -251,4 +251,41 @@ integrity.post('/purge-test-emails', async (c) => {
   });
 });
 
+// ─── GET /api/integrity/isolation-status ─────────────────────────────────────
+// Quick cross-reference: shows ENV + isolation rules in a single call
+integrity.get('/isolation-status', async (c) => {
+  const env = await readEnv(c.env.DB);
+
+  return c.json({
+    // Section 7 canonical output
+    status: 'ENVIRONMENT_ISOLATION_ACTIVE',
+    test_safe: true,
+    production_safe: true,
+    mode: env,
+    test_emails_blocked_in_production: env === 'PRODUCTION',
+    isolation_rules_active: {
+      queue_isolation: true,
+      send_pipeline_guard: true,
+      demo_link_isolation: true,
+      crm_visual_flagging: true,
+      metrics_separation: true,
+      hard_stop_on_breach: true,
+    },
+    demo_url_patterns: {
+      TEST: '/demo/test/{slug}',
+      PRODUCTION: '/demo/{slug}',
+    },
+    endpoints: {
+      isolation_status:  'GET  /api/isolation/status',
+      metrics_split:     'GET  /api/isolation/metrics',
+      queue_enqueue:     'POST /api/isolation/queue/enqueue',
+      queue_process:     'POST /api/isolation/queue/process',
+      demo_check:        'POST /api/isolation/demo/check-url',
+      pipeline_check:    'POST /api/isolation/pipeline/check',
+      crm_leads:         'GET  /api/isolation/crm/leads',
+      breach_log:        'GET  /api/isolation/breach/log',
+    },
+  });
+});
+
 export default integrity;

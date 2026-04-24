@@ -22,6 +22,44 @@ import {
   type IntegrityReport,
   type AppEnv,
 } from '../lib/lead-integrity';
+import { validateDemoUrl } from './isolation';
+
+// ─── PIPELINE BREACH LOG ─────────────────────────────────────────────────────
+async function recordPipelineBreach(
+  DB: D1Database,
+  lead: MicroLead,
+  currentEnv: AppEnv
+): Promise<void> {
+  try {
+    const breach = {
+      id: `breach-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      lead_id: lead.id,
+      lead_email: lead.email,
+      lead_environment_used: 'TEST',
+      current_env: currentEnv,
+      action_blocked: 'SEND_EMAIL',
+      reason: 'TEST lead attempted entry into PRODUCTION send pipeline (micro-scale) — hard stop',
+    };
+    const existing = await DB.prepare(
+      `SELECT value FROM settings WHERE key = 'isolation_breach_log'`
+    ).first<{ value: string }>();
+    const log = existing ? JSON.parse(existing.value) : [];
+    log.unshift(breach);
+    await DB.prepare(
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('isolation_breach_log', ?)`
+    ).bind(JSON.stringify(log.slice(0, 50))).run();
+  } catch { /* ignore */ }
+}
+
+// ─── ENV-AWARE DEMO URL ───────────────────────────────────────────────────────
+// Rule 3: TEST env → /demo/test/{slug}; PRODUCTION → /demo/{slug}
+function buildDemoUrl(slug: string, env: AppEnv, appUrl?: string): string {
+  const base = (appUrl || 'https://websitedemopro.org').replace(/\/$/, '');
+  return env === 'TEST'
+    ? `${base}/demo/test/${slug}`
+    : `${base}/demo/${slug}`;
+}
 
 // ─── ENV READER ───────────────────────────────────────────────────────────────
 async function readAppEnv(DB: D1Database): Promise<AppEnv> {
@@ -349,7 +387,7 @@ function computeCampaignMetrics(leads: MicroLead[]) {
 
 // ─── GET /api/micro-scale/status ──────────────────────────────────────────────
 microScale.get('/status', async (c) => {
-  const { DB } = c.env;
+  const { DB, APP_URL } = c.env;
 
   // Load persisted lead states from DB
   let leads = [...MEMPHIS_LEADS];
@@ -367,28 +405,54 @@ microScale.get('/status', async (c) => {
     }
   } catch { /* DB may not have settings table yet */ }
 
+  // Rule 3: read env to determine correct demo URL pattern
+  const env = await readAppEnv(DB);
   const metrics = computeCampaignMetrics(leads);
 
   return c.json({
     ...metrics,
-    leads: leads.map(l => ({
-      id: l.id,
-      business_name: l.business_name,
-      industry: l.industry,
-      city: l.city,
-      state: l.state,
-      phone: l.phone,
-      email: l.email || null,
-      demo_url: l.demo_url,
-      outreach_day: l.outreach_day,
-      thread_depth: l.thread_depth,
-      reply_received: l.reply_received,
-      tracking: l.tracking,
-      last_sent_at: l.last_sent_at,
-      resend_ids: l.resend_ids,
-      notes: l.notes,
-      email_ready: !!l.email,
-    })),
+    current_env: env,
+    environment_isolation_active: true,
+    leads: leads.map(l => {
+      // Rule 3: env-aware demo URL
+      const envDemoUrl = buildDemoUrl(l.slug, env, APP_URL);
+      const urlCheck = validateDemoUrl(l.demo_url, env);
+      // Rule 4: CRM badge
+      const isTest = TEST_EMAIL_LIST.has((l.email || '').toLowerCase().trim()) ||
+        (l as MicroLead & { lead_type?: string }).lead_type === 'TEST';
+      return {
+        id: l.id,
+        business_name: l.business_name,
+        industry: l.industry,
+        city: l.city,
+        state: l.state,
+        phone: l.phone,
+        email: l.email || null,
+        demo_url: l.demo_url,
+        env_demo_url: envDemoUrl,
+        demo_url_valid_for_env: urlCheck.valid,
+        demo_url_warning: urlCheck.valid ? null : urlCheck.reason,
+        outreach_day: l.outreach_day,
+        thread_depth: l.thread_depth,
+        reply_received: l.reply_received,
+        tracking: l.tracking,
+        last_sent_at: l.last_sent_at,
+        resend_ids: l.resend_ids,
+        notes: l.notes,
+        email_ready: !!l.email,
+        // Rule 4: CRM visual badge
+        lead_type: isTest ? 'TEST' : 'REAL',
+        crm_badge: isTest
+          ? { label: 'TEST', color: '#f59e0b', bg_color: '#431407', icon: '\ud83e\uddea', visible: true }
+          : null,
+        // Rule 2: pipeline guard flag
+        pipeline_approved: !(env === 'PRODUCTION' && isTest),
+        pipeline_warning: (env === 'PRODUCTION' && isTest)
+          ? 'TEST lead in PRODUCTION view — send is blocked'
+          : null,
+        environment_used: (l as MicroLead & { environment_used?: string }).environment_used || env,
+      };
+    }),
   });
 });
 
@@ -456,6 +520,66 @@ microScale.post('/send-day1', async (c) => {
         phone: l.phone,
       })),
     });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ██  RULE 6: ENVIRONMENT BREACH CHECK — hard stop before dispatch  ██
+  // ██  If any TEST lead is in PRODUCTION pipeline → halt all sends   ██
+  // ══════════════════════════════════════════════════════════════════
+  if (env === 'PRODUCTION') {
+    const testLeaksInPipeline = candidates.filter(l => {
+      const isTestEmail = TEST_EMAIL_LIST.has((l.email || '').toLowerCase().trim());
+      const isTaggedTest = (l as MicroLead & { lead_type?: string }).lead_type === 'TEST';
+      return isTestEmail || isTaggedTest;
+    });
+
+    if (testLeaksInPipeline.length > 0) {
+      // Log breaches
+      for (const leakedLead of testLeaksInPipeline) {
+        await recordPipelineBreach(DB, leakedLead, env);
+      }
+
+      return c.json({
+        status: 'ENVIRONMENT_BREACH',
+        send_halted: true,
+        reason: 'TEST_LEAD_IN_PRODUCTION_PIPELINE',
+        detail: `${testLeaksInPipeline.length} TEST lead(s) detected in PRODUCTION send pipeline. ALL sends halted. Remove test emails or switch to ENV=TEST.`,
+        breached_leads: testLeaksInPipeline.map(l => ({
+          id: l.id,
+          business_name: l.business_name,
+          email: l.email,
+          lead_type: 'TEST',
+        })),
+        sent: 0,
+        current_env: env,
+        corrective_actions: [
+          'POST /api/integrity/env {"mode":"TEST"} — switch to TEST to allow test sends',
+          'POST /api/integrity/purge-test-emails — clear test emails from lead records',
+          'Source real business emails and re-PATCH the affected leads',
+        ],
+      }, 403);
+    }
+  }
+
+  // ── Rule 2: Send Pipeline Guard — verify each candidate's environment_used ──
+  if (env === 'PRODUCTION') {
+    const envMismatches = candidates.filter(l => {
+      const leadEnvUsed = ((l as MicroLead & { environment_used?: string }).environment_used || '').toUpperCase();
+      return leadEnvUsed === 'TEST'; // lead was created in TEST but pipeline is PRODUCTION
+    });
+
+    if (envMismatches.length > 0) {
+      return c.json({
+        status: 'PIPELINE_ENV_MISMATCH',
+        send_blocked: true,
+        reason: 'LEAD_ENVIRONMENT_USED_MISMATCH',
+        detail: `${envMismatches.length} lead(s) have environment_used=TEST but pipeline is PRODUCTION. Send blocked.`,
+        affected_leads: envMismatches.map(l => ({ id: l.id, email: l.email })),
+        sent: 0,
+        current_env: env,
+        action: 'Re-source leads in PRODUCTION environment or switch to ENV=TEST',
+      }, 422);
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -619,10 +743,29 @@ microScale.post('/send-day1', async (c) => {
   const sentCount = results.filter(r => r.status === 'SENT').length;
   const blockedCount = results.filter(r => r.status === 'INTEGRITY_BLOCKED').length;
 
+  // ── Rule 5: Record metrics in env-specific bucket ────────────────────────
+  if (!body.dry_run && sentCount > 0) {
+    try {
+      const metricRow = await DB.prepare(
+        `SELECT value FROM settings WHERE key = ?`
+      ).bind(`isolation_metrics_${env}`).first<{ value: string }>();
+      const existingMetrics = metricRow
+        ? JSON.parse(metricRow.value)
+        : { emails_sent: 0, emails_replied: 0, emails_opened: 0, emails_clicked: 0, demos_viewed: 0, reply_rate: 0, placement_pct: 100, breach_events: 0 };
+      existingMetrics.emails_sent = (existingMetrics.emails_sent || 0) + sentCount;
+      existingMetrics.last_updated = new Date().toISOString();
+      await DB.prepare(
+        `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`
+      ).bind(`isolation_metrics_${env}`, JSON.stringify(existingMetrics)).run();
+    } catch { /* ignore metrics errors */ }
+  }
+
   return c.json({
-    status: 'ENVIRONMENT_FILTER_ACTIVE',
+    status: 'ENVIRONMENT_ISOLATION_ACTIVE',
     mode: env,
     test_emails_blocked_in_production: env === 'PRODUCTION',
+    environment_breach_check: 'PASSED',
+    pipeline_guard: 'PASSED',
     integrity_gate: integrityReport.status,
     valid_after_gate: integrityReport.valid_leads,
     rejected_by_gate: integrityReport.rejected_leads,
@@ -861,8 +1004,11 @@ microScale.patch('/leads/:id', async (c) => {
     resend_ids: updates.resend_ids || currentState.resend_ids,
   };
 
-  // Attach Section 4 metadata
+  // Attach Section 4 metadata (lead_type + environment_used)
   (newState as Record<string, unknown>).lead_type = leadTypeTag;
+  // Rule 2: stamp environment_used so pipeline guard can check it later
+  const env = await readAppEnv(DB);
+  (newState as Record<string, unknown>).environment_used = env;
 
   if (updates.tracking?.replied || updates.reply_received) {
     newState.reply_received = true;
