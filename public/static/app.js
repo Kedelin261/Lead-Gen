@@ -1,0 +1,2472 @@
+// ============= STATE =============
+const state = {
+  currentPage: 'dashboard',
+  leads: [],
+  demos: [],
+  stats: {},
+  settings: {},
+  charts: {},
+  chartInstances: {}
+};
+
+// ============= NAVIGATION =============
+function navigate(page, el) {
+  if (el) {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+  }
+  state.currentPage = page;
+  const titles = {
+    dashboard: 'Dashboard Overview',
+    leads: 'Leads Management',
+    demos: 'Demo Sites',
+    outreach: 'Outreach Activity',
+    pipeline: 'CRM Pipeline',
+    conversations: 'Conversations',
+    payments: 'Payments',
+    analytics: 'Analytics',
+    settings: 'Settings',
+    validation: 'Validation Mode',
+    'micro-scale': '🚀 Micro-Scale Outreach — Memphis, TN',
+    'isolation': '🛡️ Environment Isolation Engine',
+    'engine': '🤖 Autonomous Outreach Engine',
+    'system': '⚡ System Orchestrator — Full Pipeline'
+  };
+  document.getElementById('page-title').textContent = titles[page] || page;
+  renderPage(page);
+}
+
+// ============= API HELPERS =============
+async function api(method, path, data) {
+  try {
+    const config = {
+      method,
+      headers: { 'Content-Type': 'application/json' }
+    };
+    if (data) config.data = data;
+    const response = method === 'GET'
+      ? await axios.get('/api' + path)
+      : await axios[method.toLowerCase()]('/api' + path, data);
+    return response.data;
+  } catch (e) {
+    console.error('API Error:', e);
+    showToast(e.response?.data?.error || 'API Error', 'error');
+    return null;
+  }
+}
+
+// ============= TOAST =============
+function showToast(msg, type = 'info') {
+  const colors = { success: '#10b981', error: '#ef4444', warning: '#f59e0b', info: '#3b82f6' };
+  const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
+  const toast = document.createElement('div');
+  toast.style.cssText = `background:#1e293b;border:1px solid ${colors[type]};color:#f1f5f9;padding:12px 16px;border-radius:8px;font-size:14px;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,0.4);`;
+  toast.innerHTML = `<span>${icons[type]}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+// ============= MODAL HELPERS =============
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ============= ERROR STATE HELPER =============
+function showPageError(msg) {
+  const el = document.getElementById('page-content');
+  if (el) el.innerHTML = `<div style="text-align:center;padding:60px;color:#ef4444;"><div style="font-size:32px;margin-bottom:16px;">⚠️</div><div style="font-size:16px;font-weight:600;">${msg || 'Failed to load data'}</div><div style="font-size:13px;color:#64748b;margin-top:8px;">Check your connection or try refreshing the page.</div><button class="btn btn-ghost" style="margin-top:20px;" onclick="renderPage(state.currentPage)">🔄 Retry</button></div>`;
+}
+
+// ============= RENDER PAGES =============
+async function renderPage(page) {
+  const content = document.getElementById('page-content');
+  content.innerHTML = `<div style="text-align:center;padding:40px;color:#475569;"><div class="spinner" style="font-size:24px;">⚡</div><div style="margin-top:12px;font-size:13px;">Loading ${page}...</div></div>`;
+
+  try {
+    switch(page) {
+      case 'dashboard': await renderDashboard(); break;
+      case 'leads': await renderLeads(); break;
+      case 'demos': await renderDemos(); break;
+      case 'outreach': await renderOutreach(); break;
+      case 'pipeline': await renderPipeline(); break;
+      case 'conversations': await renderConversations(); break;
+      case 'payments': await renderPayments(); break;
+      case 'analytics': await renderAnalytics(); break;
+      case 'settings': await renderSettings(); break;
+      case 'validation': await renderValidation(); break;
+      case 'micro-scale': await renderMicroScale(); break;
+      case 'isolation': await renderIsolation(); break;
+      case 'engine': await renderEngine(); break;
+      case 'system': await renderSystem(); break;
+      default: showPageError('Unknown page: ' + page);
+    }
+  } catch (err) {
+    console.error('renderPage error:', err);
+    showPageError('An unexpected error occurred loading ' + page + '. Check console for details.');
+  }
+}
+
+// ============= DASHBOARD =============
+async function renderDashboard() {
+  const [statsData, funnelData, chartsData, insightsData] = await Promise.all([
+    api('GET', '/dashboard/stats'),
+    api('GET', '/dashboard/funnel'),
+    api('GET', '/dashboard/charts'),
+    api('GET', '/dashboard/insights')
+  ]);
+
+  if (!statsData) { showPageError('Could not load dashboard stats'); return; }
+  const s = statsData;
+  state.stats = s;
+
+  // Update topbar
+  document.getElementById('top-revenue').textContent = `\$${(s.revenue_today || 0).toLocaleString()}`;
+  document.getElementById('top-leads').textContent = s.leads_today || 0;
+  document.getElementById('top-conv').textContent = `${s.conversion_rate || 0}%`;
+
+  const funnelItems = funnelData?.funnel || [];
+  const funnelHTML = funnelItems.map(f => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #334155;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="badge badge-${f.status.toLowerCase()}">${f.status}</span>
+      </div>
+      <span style="font-weight:700;color:#f1f5f9;">${f.count}</span>
+    </div>
+  `).join('');
+
+  const insightsHTML = (insightsData?.insights || []).map(i => `
+    <div class="alert-${i.severity}" style="margin-bottom:8px;font-size:13px;">
+      ${i.message}
+    </div>
+  `).join('');
+
+  document.getElementById('page-content').innerHTML = `
+    <!-- KPI CARDS -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px;">
+      ${renderKPICard('Leads Today', s.leads_today, 'fas fa-users', '#60a5fa', '+scraped')}
+      ${renderKPICard('Demos Created', s.demos_today, 'fas fa-desktop', '#a78bfa', 'today')}
+      ${renderKPICard('Calls Made', s.calls_today, 'fas fa-phone', '#34d399', 'today')}
+      ${renderKPICard('Emails Sent', s.emails_today, 'fas fa-envelope', '#fb923c', 'today')}
+      ${renderKPICard('SMS Sent', s.sms_today, 'fas fa-comment-sms', '#f472b6', 'today')}
+      ${renderKPICard('Deals Closed', s.deals_closed, 'fas fa-handshake', '#4ade80', 'total')}
+      ${renderKPICard('Revenue Today', '\$' + (s.revenue_today || 0).toLocaleString(), 'fas fa-dollar-sign', '#fbbf24', 'earned')}
+      ${renderKPICard('Conv. Rate', s.conversion_rate + '%', 'fas fa-percentage', '#2dd4bf', 'overall')}
+    </div>
+
+    <!-- CHARTS + FUNNEL -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-bottom:24px;">
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">📈 Outreach Activity (14 days)</h3>
+        <canvas id="outreachChart" height="120"></canvas>
+      </div>
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🔄 Pipeline Funnel</h3>
+        ${funnelHTML || '<div style="color:#64748b;text-align:center;padding:20px;">No leads yet</div>'}
+      </div>
+    </div>
+
+    <!-- INSIGHTS + QUICK ACTIONS -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">💡 System Insights</h3>
+        ${insightsHTML || '<div style="color:#64748b;">No insights available yet</div>'}
+      </div>
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">⚡ Quick Actions</h3>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button class="btn btn-primary" onclick="openModal('add-lead-modal')">➕ Add New Lead</button>
+          <button class="btn btn-success" onclick="navigate('leads', document.querySelector('[data-page=leads]'))">👥 View All Leads</button>
+          <button class="btn" style="background:#7c3aed;color:white;" onclick="navigate('pipeline', document.querySelector('[data-page=pipeline]'))">📊 Open Pipeline</button>
+          <button class="btn btn-ghost" onclick="navigate('analytics', document.querySelector('[data-page=analytics]'))">📈 Deep Analytics</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Render outreach chart
+  const chartData = chartsData?.outreach || [];
+  const labels = chartData.map(d => d.date ? d.date.slice(5) : '');
+  renderChart('outreachChart', 'line', labels,
+    [
+      { label: 'Calls', data: chartData.map(d => d.calls || 0), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,0.1)', fill: true, tension: 0.4 },
+      { label: 'Emails', data: chartData.map(d => d.emails || 0), borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.1)', fill: true, tension: 0.4 },
+      { label: 'SMS', data: chartData.map(d => d.sms || 0), borderColor: '#f472b6', backgroundColor: 'rgba(244,114,182,0.1)', fill: true, tension: 0.4 }
+    ]
+  );
+}
+
+function renderKPICard(title, value, icon, color, sub) {
+  return `<div class="kpi-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <span style="font-size:12px;color:#64748b;font-weight:600;">${title.toUpperCase()}</span>
+      <i class="${icon}" style="color:${color};"></i>
+    </div>
+    <div style="font-size:28px;font-weight:900;color:${color};">${value}</div>
+    <div style="font-size:11px;color:#475569;margin-top:4px;">${sub}</div>
+  </div>`;
+}
+
+// ============= LEADS PAGE =============
+async function renderLeads() {
+  const data = await api('GET', '/leads?limit=100');
+  if (!data) { showPageError('Could not load leads'); return; }
+  const leads = data.leads || [];
+  state.leads = leads;
+  document.getElementById('nav-leads-count').textContent = data.total || 0;
+
+  document.getElementById('page-content').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <input class="input" id="leads-search" placeholder="🔍 Search leads..." style="width:200px;" oninput="filterLeads()">
+        <select class="select" id="leads-status-filter" onchange="filterLeads()">
+          <option value="">All Statuses</option>
+          <option value="NEW">New</option><option value="CONTACTED">Contacted</option>
+          <option value="RESPONDED">Responded</option><option value="INTERESTED">Interested</option>
+          <option value="CLOSED">Closed</option><option value="LOST">Lost</option>
+        </select>
+        <select class="select" id="leads-industry-filter" onchange="filterLeads()">
+          <option value="">All Industries</option>
+          <option>Roofing</option><option>Landscaping</option><option>Barbershop</option>
+          <option>Auto Repair</option><option>Cleaning</option><option>HVAC</option>
+          <option>Plumbing</option><option>Painting</option><option>Electrical</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn btn-ghost" onclick="importLeads()"><i class="fas fa-upload"></i> Import CSV</button>
+        <button class="btn btn-primary" onclick="openModal('add-lead-modal')"><i class="fas fa-plus"></i> Add Lead</button>
+      </div>
+    </div>
+
+    <div class="card" style="overflow:auto;">
+      <table class="table" id="leads-table">
+        <thead>
+          <tr>
+            <th>Business</th><th>Industry</th><th>City</th><th>Phone</th>
+            <th>Score</th><th>Status</th><th>Website</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="leads-tbody">
+          ${renderLeadsRows(leads)}
+        </tbody>
+      </table>
+      ${leads.length === 0 ? '<div style="text-align:center;padding:40px;color:#475569;">No leads yet. Add your first lead to get started.</div>' : ''}
+    </div>
+  `;
+}
+
+function renderLeadsRows(leads) {
+  return leads.map(l => {
+    const scoreColor = l.lead_score >= 80 ? '#4ade80' : l.lead_score >= 60 ? '#fbbf24' : '#f87171';
+    return `<tr>
+      <td>
+        <div style="font-weight:600;color:#f1f5f9;">${l.name}</div>
+        ${l.email ? '<div style="font-size:12px;color:#64748b;">'+l.email+'</div>' : ''}
+      </td>
+      <td style="color:#94a3b8;">${l.industry || '—'}</td>
+      <td style="color:#94a3b8;">${l.city || '—'}${l.state ? ', '+l.state : ''}</td>
+      <td style="color:#94a3b8;">${l.phone || '—'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="score-bar" style="width:60px;"><div class="score-fill" style="width:${l.lead_score}%;background:${scoreColor};"></div></div>
+          <span style="color:${scoreColor};font-weight:700;font-size:13px;">${l.lead_score}</span>
+        </div>
+      </td>
+      <td><span class="badge badge-${l.status.toLowerCase()}">${l.status}</span></td>
+      <td><span style="font-size:12px;color:${l.website_status==='NONE'?'#4ade80':'#fbbf24'};">${l.website_status}</span></td>
+      <td>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="viewLead(${l.id})" title="View">👁️</button>
+          <button class="btn btn-primary" style="padding:4px 8px;font-size:12px;" onclick="generateDemo(${l.id})" title="Generate Demo">🌐</button>
+          <button class="btn btn-success" style="padding:4px 8px;font-size:12px;" onclick="runOutreach(${l.id})" title="Start Outreach">📤</button>
+          <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="createPaymentLink(${l.id})" title="Payment Link">💳</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function filterLeads() {
+  const search = document.getElementById('leads-search')?.value.toLowerCase() || '';
+  const status = document.getElementById('leads-status-filter')?.value || '';
+  const industry = document.getElementById('leads-industry-filter')?.value || '';
+  const filtered = state.leads.filter(l => {
+    const matchSearch = !search || l.name?.toLowerCase().includes(search) || l.phone?.includes(search) || l.email?.toLowerCase().includes(search);
+    const matchStatus = !status || l.status === status;
+    const matchIndustry = !industry || l.industry?.toLowerCase().includes(industry.toLowerCase());
+    return matchSearch && matchStatus && matchIndustry;
+  });
+  const tbody = document.getElementById('leads-tbody');
+  if (tbody) tbody.innerHTML = renderLeadsRows(filtered);
+}
+
+// ============= DEMOS PAGE =============
+async function renderDemos() {
+  const data = await api('GET', '/demos?limit=100');
+  if (!data) { showPageError('Could not load demos'); return; }
+  const demos = data.demos || [];
+
+  document.getElementById('page-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="font-size:15px;color:#94a3b8;">${demos.length} demo sites generated</h2>
+      <button class="btn btn-primary" onclick="navigate('leads',document.querySelector('[data-page=leads]'))">+ Generate from Leads</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;">
+      ${demos.map(d => `
+        <div class="card" style="position:relative;">
+          <div style="background:#0f172a;border-radius:8px;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:12px;border:1px solid #334155;overflow:hidden;font-size:32px;">${getIndustryEmoji(d.industry)}</div>
+          <div style="font-weight:700;color:#f1f5f9;margin-bottom:4px;">${d.business_name}</div>
+          <div style="font-size:12px;color:#64748b;margin-bottom:8px;">${d.industry || 'General'} · ${d.city || 'Unknown'}</div>
+          ${d.headline ? '<div style="font-size:12px;color:#94a3b8;margin-bottom:12px;font-style:italic;">"'+d.headline.slice(0,60)+'..."</div>' : ''}
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span class="badge ${d.viewed ? 'badge-responded' : 'badge-new'}">${d.viewed ? '👁️ Viewed '+d.view_count+'x' : '⏳ Not viewed'}</span>
+            <span style="font-size:11px;color:#475569;">${new Date(d.created_at).toLocaleDateString()}</span>
+          </div>
+          <div style="display:flex;gap:8px;">
+            ${d.demo_url ? `<a href="${d.demo_url}" target="_blank" class="btn btn-primary" style="flex:1;text-align:center;font-size:13px;">Open Demo</a>` : '<span class="btn btn-ghost" style="flex:1;text-align:center;font-size:13px;cursor:not-allowed;">No URL</span>'}
+            <button class="btn btn-ghost" style="font-size:13px;" onclick="regenerateDemo(${d.id})">🔄</button>
+            <button class="btn btn-danger" style="font-size:13px;" onclick="deleteDemo(${d.id})">🗑️</button>
+          </div>
+        </div>
+      `).join('') || '<div style="grid-column:1/-1;text-align:center;padding:60px;color:#475569;">No demos yet. Generate demos from the Leads page.</div>'}
+    </div>
+  `;
+}
+
+// ============= OUTREACH PAGE =============
+async function renderOutreach() {
+  const data = await api('GET', '/outreach/stats');
+  const recentData = await api('GET', '/outreach?limit=50');
+  const today = data?.today || {};
+  const recent = recentData?.outreach || [];
+
+  document.getElementById('page-content').innerHTML = `
+    <!-- METRICS -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px;">
+      ${renderKPICard('Calls Today', today.calls || 0, 'fas fa-phone', '#34d399', 'made')}
+      ${renderKPICard('Emails Today', today.emails || 0, 'fas fa-envelope', '#fb923c', 'sent')}
+      ${renderKPICard('SMS Today', today.sms || 0, 'fas fa-comment-sms', '#f472b6', 'sent')}
+      ${renderKPICard('Opened', today.opened || 0, 'fas fa-envelope-open', '#60a5fa', 'emails')}
+      ${renderKPICard('Clicked', today.clicked || 0, 'fas fa-mouse-pointer', '#a78bfa', 'links')}
+      ${renderKPICard('Replied', today.replied || 0, 'fas fa-reply', '#fbbf24', 'responses')}
+    </div>
+
+    <!-- RECENT ACTIVITY -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h3 style="font-size:15px;font-weight:700;color:#f1f5f9;">📡 Recent Outreach Activity</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="tab-btn active" onclick="filterOutreach('all',this)">All</button>
+          <button class="tab-btn" onclick="filterOutreach('call',this)">Calls</button>
+          <button class="tab-btn" onclick="filterOutreach('email',this)">Emails</button>
+          <button class="tab-btn" onclick="filterOutreach('sms',this)">SMS</button>
+        </div>
+      </div>
+      <div id="outreach-feed">
+        ${recent.map(o => `
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;border-bottom:1px solid #334155;font-size:13px;" data-channel="${o.channel}">
+            <span style="font-size:18px;">${o.channel==='call'?'📞':o.channel==='email'?'✉️':'💬'}</span>
+            <div style="flex:1;">
+              <div style="color:#f1f5f9;font-weight:600;">${o.business_name || 'Lead #'+o.lead_id}</div>
+              <div style="color:#64748b;">${o.subject || o.body?.slice(0,60) || '—'}...</div>
+            </div>
+            <div style="text-align:right;">
+              <span class="badge badge-${o.status.toLowerCase()}">${o.status}</span>
+              <div style="font-size:11px;color:#475569;margin-top:4px;">${o.sent_at ? new Date(o.sent_at).toLocaleString() : '—'}</div>
+            </div>
+          </div>
+        `).join('') || '<div style="text-align:center;padding:40px;color:#475569;">No outreach activity yet</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function filterOutreach(channel, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const items = document.querySelectorAll('#outreach-feed > div[data-channel]');
+  items.forEach(item => {
+    item.style.display = channel === 'all' || item.dataset.channel === channel ? '' : 'none';
+  });
+}
+
+// ============= PIPELINE (KANBAN) =============
+async function renderPipeline() {
+  const data = await api('GET', '/leads?limit=200');
+  const leads = data?.leads || [];
+
+  const stages = ['NEW','CONTACTED','RESPONDED','INTERESTED','CLOSED','LOST'];
+  const stageColors = { NEW:'#3b82f6',CONTACTED:'#06b6d4',RESPONDED:'#10b981',INTERESTED:'#f59e0b',CLOSED:'#22c55e',LOST:'#ef4444' };
+
+  const byStage = {};
+  stages.forEach(s => byStage[s] = leads.filter(l => l.status === s));
+
+  document.getElementById('page-content').innerHTML = `
+    <div class="kanban">
+      ${stages.map(stage => `
+        <div class="kanban-col">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span style="font-weight:700;font-size:13px;color:${stageColors[stage]};">${stage}</span>
+            <span style="background:#334155;padding:2px 8px;border-radius:9999px;font-size:12px;">${byStage[stage].length}</span>
+          </div>
+          ${byStage[stage].map(l => `
+            <div class="kanban-card" onclick="viewLead(${l.id})">
+              <div style="font-weight:600;font-size:13px;color:#f1f5f9;margin-bottom:4px;">${l.name}</div>
+              <div style="font-size:11px;color:#64748b;">${l.industry || ''} · ${l.city || ''}</div>
+              <div style="font-size:11px;color:#475569;margin-top:6px;">Score: <span style="color:#fbbf24;">${l.lead_score}</span></div>
+              ${l.demo_url ? '<div style="font-size:10px;color:#4ade80;margin-top:4px;">✅ Demo ready</div>' : ''}
+            </div>
+          `).join('')}
+          ${stage === 'NEW' ? `<button class="btn btn-ghost" style="width:100%;margin-top:8px;font-size:12px;" onclick="openModal('add-lead-modal')">+ Add Lead</button>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+// ============= CONVERSATIONS =============
+async function renderConversations() {
+  const data = await api('GET', '/conversations');
+  const threads = data?.threads || [];
+  const unread = data?.unread_count || 0;
+
+  document.getElementById('page-content').innerHTML = `
+    <div style="display:flex;gap:20px;height:600px;">
+      <!-- Thread list -->
+      <div class="card" style="width:300px;overflow-y:auto;padding:0;">
+        <div style="padding:16px;border-bottom:1px solid #334155;font-weight:700;color:#f1f5f9;">
+          Inbox ${unread > 0 ? '<span class="badge badge-new" style="margin-left:8px;">'+unread+' unread</span>' : ''}
+        </div>
+        ${threads.map(t => `
+          <div style="padding:12px 16px;border-bottom:1px solid #1e293b;cursor:pointer;transition:background 0.2s;" 
+               onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background=''"
+               onclick="openThread(${t.lead.id})">
+            <div style="font-weight:600;font-size:13px;color:#f1f5f9;">${t.lead.name}</div>
+            <div style="font-size:11px;color:#64748b;">${t.messages[0]?.message?.slice(0,40) || '—'}...</div>
+            <div style="font-size:10px;color:#475569;margin-top:4px;">${t.messages.length} messages</div>
+          </div>
+        `).join('') || '<div style="padding:40px;text-align:center;color:#475569;">No conversations yet</div>'}
+      </div>
+      <!-- Message view -->
+      <div class="card" style="flex:1;display:flex;flex-direction:column;">
+        <div style="flex:1;display:flex;align-items:center;justify-content:center;color:#475569;" id="msg-area">
+          <div style="text-align:center;">
+            <div style="font-size:40px;margin-bottom:12px;">💬</div>
+            <div>Select a conversation to view messages</div>
+          </div>
+        </div>
+        <div style="border-top:1px solid #334155;padding:16px;display:flex;gap:12px;" id="reply-area" style="display:none;">
+          <input class="input" id="reply-input" placeholder="Type a reply..." style="flex:1;" onkeydown="if(event.key==='Enter')sendReply()">
+          <button class="btn btn-primary" onclick="sendReply()">Send</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============= PAYMENTS PAGE =============
+async function renderPayments() {
+  const data = await api('GET', '/payments');
+  const payments = data?.payments || [];
+  const stats = data?.stats || {};
+
+  document.getElementById('page-content').innerHTML = `
+    <!-- Stats -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">
+      ${renderKPICard('Total Revenue', '\$'+(stats.total_revenue||0).toLocaleString(), 'fas fa-dollar-sign', '#4ade80', 'all time')}
+      ${renderKPICard('Revenue Today', '\$'+(stats.today_revenue||0).toLocaleString(), 'fas fa-calendar-day', '#fbbf24', 'earned')}
+      ${renderKPICard('Paid Orders', stats.total_paid||0, 'fas fa-check-circle', '#34d399', 'completed')}
+      ${renderKPICard('Pending', stats.total_pending||0, 'fas fa-clock', '#f87171', 'awaiting')}
+    </div>
+
+    <div class="card" style="overflow:auto;">
+      <table class="table">
+        <thead><tr><th>Business</th><th>Amount</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${payments.map(p => `
+            <tr>
+              <td><div style="font-weight:600;color:#f1f5f9;">${p.business_name}</div><div style="font-size:12px;color:#64748b;">${p.city||'—'}</div></td>
+              <td style="color:#4ade80;font-weight:700;">\$${(p.amount/100).toFixed(2)}</td>
+              <td><span class="badge ${p.status==='PAID'?'badge-closed':p.status==='PENDING'?'badge-new':'badge-lost'}">${p.status}</span></td>
+              <td style="color:#64748b;font-size:13px;">${p.paid_at ? new Date(p.paid_at).toLocaleDateString() : new Date(p.created_at).toLocaleDateString()}</td>
+              <td>
+                ${p.payment_link ? `<a href="${p.payment_link}" target="_blank" class="btn btn-ghost" style="font-size:12px;padding:4px 8px;">🔗 Link</a>` : '—'}
+                ${p.status==='PENDING' ? `<button class="btn btn-primary" style="font-size:12px;padding:4px 8px;margin-left:6px;" onclick="resendPayment(${p.id})">📧 Resend</button>` : ''}
+              </td>
+            </tr>
+          `).join('') || '<tr><td colspan="5" style="text-align:center;padding:40px;color:#475569;">No payments yet</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ============= ANALYTICS =============
+async function renderAnalytics() {
+  const data = await api('GET', '/dashboard/analytics');
+  if (!data) { showPageError('Could not load analytics'); return; }
+
+  document.getElementById('page-content').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px;">
+      ${renderKPICard('Total Revenue', '\$'+(data.total_revenue||0).toLocaleString(), 'fas fa-dollar-sign', '#4ade80', 'all time')}
+      ${renderKPICard('Avg Time to Close', (data.avg_hours_to_close||0)+' hrs', 'fas fa-clock', '#fbbf24', 'average')}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+      <!-- Channel Performance -->
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">📡 Channel Performance</h3>
+        ${(data.channel_performance||[]).map(c => `
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #334155;">
+            <span style="font-size:20px;">${c.channel==='call'?'📞':c.channel==='email'?'✉️':'💬'}</span>
+            <div style="flex:1;">
+              <div style="font-weight:600;color:#f1f5f9;text-transform:capitalize;">${c.channel}</div>
+              <div style="font-size:12px;color:#64748b;">${c.sent} sent · ${c.opened||0} opened · ${c.replied||0} replied</div>
+            </div>
+            <span style="color:#fbbf24;font-weight:700;">${c.sent > 0 ? Math.round((c.replied||0)/c.sent*100) : 0}%</span>
+          </div>
+        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+      </div>
+      <!-- Industry Performance -->
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🏭 Industry Performance</h3>
+        ${(data.industry_performance||[]).map(i => `
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #334155;">
+            <span style="font-size:16px;">${getIndustryEmoji(i.industry)}</span>
+            <div style="flex:1;">
+              <div style="font-weight:600;color:#f1f5f9;">${i.industry}</div>
+              <div style="font-size:12px;color:#64748b;">${i.total_leads} leads · ${i.closed} closed</div>
+            </div>
+            <span style="color:#4ade80;font-weight:700;">${i.total_leads > 0 ? Math.round(i.closed/i.total_leads*100) : 0}%</span>
+          </div>
+        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+      </div>
+    </div>
+    <!-- City Performance -->
+    <div class="card">
+      <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">📍 City Performance</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+        ${(data.city_performance||[]).map(c => `
+          <div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;">
+            <div style="font-weight:700;color:#f1f5f9;">${c.city}</div>
+            <div style="font-size:12px;color:#64748b;">${c.total_leads} leads · ${c.closed} closed</div>
+            <div class="score-bar" style="margin-top:8px;"><div class="score-fill" style="width:${c.total_leads > 0 ? Math.round(c.closed/c.total_leads*100) : 0}%;background:#4ade80;"></div></div>
+          </div>
+        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+      </div>
+    </div>
+  `;
+}
+
+// ============= SETTINGS =============
+async function renderSettings() {
+  const data = await api('GET', '/settings');
+  const s = data?.settings || {};
+
+  document.getElementById('page-content').innerHTML = `
+    <div style="max-width:720px;">
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🎯 Campaign Settings</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div><label style="font-size:12px;color:#94a3b8;">Target City</label>
+            <input class="input" id="set-city" value="${s.target_city||''}" style="width:100%;margin-top:4px;"></div>
+          <div><label style="font-size:12px;color:#94a3b8;">Target State</label>
+            <input class="input" id="set-state" value="${s.target_state||''}" style="width:100%;margin-top:4px;"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">⚡ Rate Limits (Safety Controls)</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          <div><label style="font-size:12px;color:#94a3b8;">Max Emails/Day</label>
+            <input class="input" id="set-emails" type="number" value="${s.max_emails_per_day||50}" style="width:100%;margin-top:4px;"></div>
+          <div><label style="font-size:12px;color:#94a3b8;">Max SMS/Day</label>
+            <input class="input" id="set-sms" type="number" value="${s.max_sms_per_day||30}" style="width:100%;margin-top:4px;"></div>
+          <div><label style="font-size:12px;color:#94a3b8;">Max Calls/Day</label>
+            <input class="input" id="set-calls" type="number" value="${s.max_calls_per_day||100}" style="width:100%;margin-top:4px;"></div>
+        </div>
+        <div style="margin-top:12px;">
+          <label style="font-size:12px;color:#94a3b8;">Min Lead Score (0-100)</label>
+          <input class="input" id="set-minscore" type="number" value="${s.min_lead_score||60}" style="width:120px;margin-top:4px;">
+          <span style="font-size:12px;color:#64748b;margin-left:8px;">Only outreach leads with score ≥ this value</span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🔑 API Configuration</h3>
+        <div style="display:grid;gap:12px;">
+          <div>
+            <label style="font-size:12px;color:#94a3b8;">Stripe Publishable Key</label>
+            <input class="input" value="pk_live_****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
+            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
+          </div>
+          <div>
+            <label style="font-size:12px;color:#94a3b8;">Resend API Key</label>
+            <input class="input" value="re_****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
+            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
+          </div>
+          <div>
+            <label style="font-size:12px;color:#94a3b8;">OpenAI API Key</label>
+            <input class="input" value="sk-proj-****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
+            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">📜 Compliance</h3>
+        <div style="font-size:13px;color:#94a3b8;line-height:1.8;">
+          <p>✅ TCPA Compliance: SMS includes opt-out ("Reply STOP to opt out")</p>
+          <p>✅ CAN-SPAM: All emails include unsubscribe link</p>
+          <p>✅ Rate limiting: Enforced per channel per day</p>
+          <p>✅ DNC handling: STOP replies auto-update lead to LOST</p>
+          <p>✅ Business hours: Outreach respects timezone rules</p>
+          <p>✅ Max 3 contact attempts per lead</p>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveSettings()" style="padding:12px 32px;font-size:15px;">💾 Save Settings</button>
+    </div>
+  `;
+}
+
+// ============= ACTIONS =============
+async function generateDemo(leadId) {
+  showToast('Generating demo with AI...', 'info');
+  const data = await api('POST', '/demos/generate', { lead_id: leadId });
+  if (data?.demo?.demo_url) {
+    showToast('Demo generated! Opening...', 'success');
+    window.open(data.demo.demo_url, '_blank');
+  } else if (data?.message?.includes('already exists') && data?.demo?.demo_url) {
+    window.open(data.demo.demo_url, '_blank');
+  }
+}
+
+async function runOutreach(leadId) {
+  showToast('Running Day 1 outreach sequence...', 'info');
+  const data = await api('POST', '/outreach/sequence', { lead_id: leadId, day: 1 });
+  if (data) showToast('Outreach sequence started! Check Outreach page.', 'success');
+}
+
+async function createPaymentLink(leadId) {
+  showToast('Creating payment link...', 'info');
+  const data = await api('POST', '/payments/create-link', { lead_id: leadId });
+  if (data?.payment_link) {
+    showToast('Payment link created!', 'success');
+    navigator.clipboard?.writeText(data.payment_link).then(() => showToast('Link copied to clipboard!', 'success'));
+    window.open(data.payment_link, '_blank');
+  }
+}
+
+async function submitLead(e) {
+  e.preventDefault();
+  const leadData = {
+    name: document.getElementById('lead-name').value,
+    industry: document.getElementById('lead-industry').value,
+    phone: document.getElementById('lead-phone').value,
+    email: document.getElementById('lead-email').value,
+    city: document.getElementById('lead-city').value,
+    state: document.getElementById('lead-state').value,
+    website: document.getElementById('lead-website').value,
+    address: document.getElementById('lead-address').value,
+    notes: document.getElementById('lead-notes').value,
+  };
+  const data = await api('POST', '/leads', leadData);
+  if (data?.lead) {
+    showToast('Lead added successfully!', 'success');
+    closeModal('add-lead-modal');
+    document.getElementById('add-lead-form').reset();
+    if (state.currentPage === 'leads') renderLeads();
+    else if (state.currentPage === 'pipeline') renderPipeline();
+    else if (state.currentPage === 'dashboard') renderDashboard();
+  }
+}
+
+async function viewLead(leadId) {
+  const data = await api('GET', '/leads/' + leadId);
+  if (!data) return;
+  const l = data.lead;
+  openModal('lead-detail-modal');
+  document.getElementById('lead-detail-title').textContent = l.name;
+  document.getElementById('lead-detail-content').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+      <div>
+        <div style="font-size:12px;color:#64748b;">Industry</div>
+        <div style="color:#f1f5f9;font-weight:600;">${l.industry || '—'}</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#64748b;">Location</div>
+        <div style="color:#f1f5f9;font-weight:600;">${l.city || '—'}${l.state ? ', '+l.state : ''}</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#64748b;">Phone</div>
+        <div style="color:#f1f5f9;">${l.phone || '—'}</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#64748b;">Email</div>
+        <div style="color:#f1f5f9;">${l.email || '—'}</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#64748b;">Lead Score</div>
+        <div style="color:#fbbf24;font-weight:700;font-size:20px;">${l.lead_score}/100</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#64748b;">Status</div>
+        <span class="badge badge-${l.status.toLowerCase()}">${l.status}</span>
+      </div>
+    </div>
+
+    ${l.demo_url ? `<div style="margin-bottom:16px;padding:12px;background:#0f172a;border-radius:8px;border:1px solid #334155;">
+      <div style="font-size:12px;color:#64748b;margin-bottom:4px;">Demo URL</div>
+      <a href="${l.demo_url}" target="_blank" style="color:#3b82f6;font-size:13px;">${l.demo_url}</a>
+    </div>` : ''}
+
+    <!-- Status change -->
+    <div style="margin-bottom:16px;">
+      <label style="font-size:12px;color:#94a3b8;">Update Status</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+        ${['NEW','CONTACTED','RESPONDED','INTERESTED','CLOSED','LOST'].map(s => `
+          <button onclick="updateLeadStatus(${l.id},'${s}')" class="btn ${l.status===s?'btn-primary':'btn-ghost'}" style="font-size:12px;padding:4px 10px;">${s}</button>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- Outreach history -->
+    <div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:8px;font-weight:600;">OUTREACH HISTORY (${data.outreach?.length || 0})</div>
+      ${(data.outreach||[]).slice(0,5).map(o => `
+        <div style="padding:8px 0;border-bottom:1px solid #334155;font-size:12px;display:flex;gap:8px;align-items:center;">
+          <span>${o.channel==='call'?'📞':o.channel==='email'?'✉️':'💬'}</span>
+          <span style="color:#94a3b8;">${o.channel} #${o.attempt_number}</span>
+          <span class="badge badge-${o.status.toLowerCase()}">${o.status}</span>
+          <span style="color:#475569;">${o.sent_at ? new Date(o.sent_at).toLocaleDateString() : '—'}</span>
+        </div>
+      `).join('') || '<div style="color:#475569;font-size:12px;">No outreach yet</div>'}
+    </div>
+
+    <!-- Actions -->
+    <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="generateDemo(${l.id});closeModal('lead-detail-modal')">🌐 Generate Demo</button>
+      <button class="btn btn-success" onclick="runOutreach(${l.id});closeModal('lead-detail-modal')">📤 Start Outreach</button>
+      <button class="btn btn-ghost" onclick="createPaymentLink(${l.id});closeModal('lead-detail-modal')">💳 Payment Link</button>
+    </div>
+  `;
+}
+
+async function updateLeadStatus(leadId, status) {
+  await api('PATCH', '/leads/' + leadId, { status });
+  showToast('Status updated to ' + status, 'success');
+  viewLead(leadId); // refresh
+}
+
+async function regenerateDemo(demoId) {
+  showToast('Regenerating demo...', 'info');
+  const data = await api('POST', '/demos/' + demoId + '/regenerate');
+  if (data) { showToast('Demo regenerated!', 'success'); renderDemos(); }
+}
+
+async function deleteDemo(demoId) {
+  if (!confirm('Delete this demo?')) return;
+  await api('DELETE', '/demos/' + demoId);
+  showToast('Demo deleted', 'info');
+  renderDemos();
+}
+
+async function resendPayment(paymentId) {
+  showToast('Resending payment link...', 'info');
+  await api('POST', '/payments/' + paymentId + '/resend');
+  showToast('Payment link resent!', 'success');
+}
+
+async function saveSettings() {
+  const data = {
+    target_city: document.getElementById('set-city').value,
+    target_state: document.getElementById('set-state').value,
+    max_emails_per_day: document.getElementById('set-emails').value,
+    max_sms_per_day: document.getElementById('set-sms').value,
+    max_calls_per_day: document.getElementById('set-calls').value,
+    min_lead_score: document.getElementById('set-minscore').value,
+  };
+  await api('PATCH', '/settings', data);
+  showToast('Settings saved!', 'success');
+}
+
+async function toggleCampaign() {
+  const data = await api('POST', '/dashboard/toggle-campaign');
+  if (data) {
+    const btn = document.getElementById('toggle-campaign');
+    btn.textContent = data.campaign_active ? 'Active' : 'Paused';
+    btn.className = data.campaign_active ? 'btn btn-success' : 'btn btn-danger';
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '12px';
+    showToast('Campaign ' + (data.campaign_active ? 'activated' : 'paused'), data.campaign_active ? 'success' : 'warning');
+  }
+}
+
+function importLeads() {
+  showToast('CSV import: Use /api/leads/bulk with JSON array of leads', 'info');
+}
+
+async function openThread(leadId) {
+  const data = await api('GET', '/conversations?lead_id=' + leadId);
+  const msgs = data?.conversations || [];
+  await api('POST', '/conversations/' + leadId + '/mark-read');
+  document.getElementById('msg-area').innerHTML = `
+    <div style="width:100%;height:100%;overflow-y:auto;padding:16px;" id="thread-messages">
+      ${msgs.map(m => `
+        <div style="display:flex;${m.direction==='outbound'?'justify-content:flex-end':'justify-content:flex-start'};margin-bottom:12px;">
+          <div style="max-width:70%;background:${m.direction==='outbound'?'#2563eb':'#334155'};padding:10px 14px;border-radius:12px;font-size:13px;color:#f1f5f9;">
+            <div>${m.message || '—'}</div>
+            <div style="font-size:10px;opacity:0.6;margin-top:4px;">${m.channel.toUpperCase()} · ${new Date(m.created_at).toLocaleString()}</div>
+          </div>
+        </div>
+      `).join('') || '<div style="text-align:center;color:#475569;padding:20px;">No messages yet</div>'}
+    </div>
+  `;
+  const replyArea = document.getElementById('reply-area');
+  replyArea.style.display = 'flex';
+  replyArea.dataset.leadId = leadId;
+}
+
+async function sendReply() {
+  const input = document.getElementById('reply-input');
+  const leadId = document.getElementById('reply-area')?.dataset.leadId;
+  if (!input?.value || !leadId) return;
+  await api('POST', '/conversations', { lead_id: leadId, channel: 'sms', direction: 'outbound', message: input.value });
+  showToast('Reply logged', 'success');
+  input.value = '';
+  openThread(leadId);
+}
+
+// ============= CHART HELPER =============
+function renderChart(canvasId, type, labels, datasets) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (state.chartInstances[canvasId]) state.chartInstances[canvasId].destroy();
+  state.chartInstances[canvasId] = new Chart(ctx, {
+    type,
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: '#94a3b8', boxWidth: 12, font: { size: 12 } } } },
+      scales: {
+        x: { grid: { color: '#334155' }, ticks: { color: '#64748b' } },
+        y: { grid: { color: '#334155' }, ticks: { color: '#64748b' } }
+      }
+    }
+  });
+}
+
+// ============= HELPERS =============
+function getIndustryEmoji(industry) {
+  if (!industry) return '🏢';
+  const lower = industry.toLowerCase();
+  if (lower.includes('roof')) return '🏠';
+  if (lower.includes('landscape') || lower.includes('lawn')) return '🌿';
+  if (lower.includes('barber') || lower.includes('hair')) return '✂️';
+  if (lower.includes('auto') || lower.includes('mechanic')) return '🔧';
+  if (lower.includes('clean')) return '🧹';
+  if (lower.includes('hvac')) return '❄️';
+  if (lower.includes('plumb')) return '🔩';
+  if (lower.includes('paint')) return '🎨';
+  if (lower.includes('electric')) return '⚡';
+  if (lower.includes('pest')) return '🐛';
+  if (lower.includes('mov')) return '📦';
+  return '🏢';
+}
+
+// ============= INIT =============
+async function init() {
+  // Load campaign status
+  const stats = await api('GET', '/dashboard/stats');
+  if (stats) {
+    const btn = document.getElementById('toggle-campaign');
+    btn.textContent = stats.campaign_active ? 'Active' : 'Paused';
+    btn.className = 'btn ' + (stats.campaign_active ? 'btn-success' : 'btn-danger');
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '12px';
+  }
+
+  // Check unread
+  const unreadData = await api('GET', '/conversations/unread-count');
+  if ((unreadData?.count || 0) > 0) {
+    const badge = document.getElementById('nav-unread-count');
+    badge.textContent = unreadData.count;
+    badge.style.display = 'inline';
+  }
+
+  // Load leads count
+  const leadsData = await api('GET', '/leads?limit=1');
+  if (leadsData) document.getElementById('nav-leads-count').textContent = leadsData.total || 0;
+
+  // Render initial page
+  renderPage('dashboard');
+
+  // Auto-refresh every 30 seconds
+  setInterval(async () => {
+    if (state.currentPage === 'dashboard') {
+      const s = await api('GET', '/dashboard/stats');
+      if (s) {
+        document.getElementById('top-revenue').textContent = '\$' + (s.revenue_today || 0).toLocaleString();
+        document.getElementById('top-leads').textContent = s.leads_today || 0;
+        document.getElementById('top-conv').textContent = s.conversion_rate + '%';
+      }
+    }
+  }, 30000);
+}
+
+// ═══════════════════════════════════════════════════════════
+// VALIDATION MODE PAGE RENDERER
+// ═══════════════════════════════════════════════════════════
+// ── ROOFING VALIDATION RUN PANEL ──────────────────────────────────────────────
+async function renderRoofingValidation() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:#475569;"><div style="font-size:24px;">🏠</div><p>Loading roofing validation status...</p></div>';
+
+  const status = await api('GET', '/validation/roofing/status');
+  if (!status) return;
+
+  const t    = status.tracking || {};
+  const pass = status.pass;
+  const sc   = pass ? '#10b981' : '#f59e0b';
+  const sb   = pass ? '#10b98122' : '#f59e0b22';
+  const rrNum = parseFloat((status.response_rate||'0%').replace('%',''));
+  const barW  = Math.min(100, (rrNum / 5) * 100); // 5% = 100% of bar
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="font-size:28px;">🏠</div>
+      <div>
+        <h2 style="margin:0;color:#f1f5f9;font-size:20px;">Memphis Roofing — Validation Run</h2>
+        <p style="margin:4px 0 0;color:#64748b;font-size:13px;">Niche: <strong style="color:#f1f5f9;">Roofing</strong> &nbsp;|&nbsp; City: <strong style="color:#f1f5f9;">Memphis, TN</strong> &nbsp;|&nbsp; Target: 20 leads &nbsp;|&nbsp; Score gate: ≥60</p>
+      </div>
+      <span style="margin-left:auto;background:${sb};color:${sc};padding:6px 16px;border-radius:9999px;font-weight:700;font-size:13px;">${status.status}</span>
+    </div>
+
+    <!-- §9 Required output -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px;">
+      ${[
+        ['Leads Processed', t.leads_processed||0, '#22d3ee'],
+        ['Responses',       t.responses||0,       '#10b981'],
+        ['Demo Views',      t.demo_views||0,       '#a78bfa'],
+        ['Conversations',   t.conversations||0,    '#f97316'],
+      ].map(([label,val,color])=>`
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:${color};">${val}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">${label}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- Response rate + pass/fail -->
+    <div style="background:#1e293b;border:1px solid ${sc};border-radius:10px;padding:20px;margin-bottom:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="color:#f1f5f9;font-size:15px;font-weight:700;">Response Rate</span>
+        <span style="font-size:28px;font-weight:700;color:${sc};">${status.response_rate}</span>
+      </div>
+      <div style="background:#0f172a;border-radius:4px;height:8px;margin-bottom:10px;">
+        <div style="background:${sc};height:8px;border-radius:4px;width:${barW}%;transition:width 0.5s;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#64748b;">
+        <span>0%</span>
+        <span style="color:${sc};font-weight:700;">Threshold: 5% to PASS</span>
+        <span>10%+</span>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:${sb};border-radius:8px;text-align:center;">
+        <span style="color:${sc};font-weight:700;font-size:14px;">${pass ? '✅ VALIDATION PASS — response_rate >= 5%' : '⏳ VALIDATION PENDING — collecting responses'}</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
+      <button onclick="executeRoofingRun()" style="background:#22d3ee;color:#0f172a;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">▶ Execute Run</button>
+      <button onclick="executeRoofingDryRun()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:13px;">🧪 Dry Run Preview</button>
+      <button onclick="renderRoofingValidation()" style="background:#1e293b;color:#64748b;border:1px solid #334155;padding:10px 14px;border-radius:8px;cursor:pointer;font-size:13px;">🔄 Refresh</button>
+    </div>
+
+    <!-- Log a response manually -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:24px;">
+      <h3 style="margin:0 0 12px;color:#f1f5f9;font-size:14px;">📊 Log a Response (§7 Tracking)</h3>
+      <p style="color:#64748b;font-size:12px;margin:0 0 12px;">When a lead responds by call, SMS, or demo view — log it here. Only responses, demo_views, and conversations are tracked per spec.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input id="resp-lead-id" placeholder="Lead ID (e.g. roof-001)" style="background:#0f172a;color:#f1f5f9;border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:13px;width:200px;">
+        <select id="resp-type" style="background:#0f172a;color:#f1f5f9;border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:13px;">
+          <option value="response">Response (call/email/sms)</option>
+          <option value="demo_view">Demo View</option>
+          <option value="conversation">Conversation Started</option>
+        </select>
+        <button onclick="logRoofingResponse()" style="background:#10b981;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Log It</button>
+      </div>
+    </div>
+
+    <!-- Queues summary -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;">
+      ${[['📞 Call Queue', status.queues?.calls||0, '#f97316','(CALL first — human dials)'],['💬 SMS Queue', status.queues?.sms||0, '#a78bfa','(10min after call)'],['📧 Email Queue', 0, '#22d3ee','(Day 1 — no links)']].map(([label,n,color,note])=>`
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:22px;font-weight:700;color:${color};">${n}</div>
+          <div style="font-size:12px;color:#64748b;">${label}</div>
+          <div style="font-size:11px;color:#475569;margin-top:4px;">${note}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- §8 Hard stop rules -->
+    <div style="background:#1e293b;border:1px solid #ef444444;border-radius:10px;padding:16px;">
+      <h3 style="margin:0 0 10px;color:#f87171;font-size:13px;">🚨 §8 Hard Stop Conditions</h3>
+      <div style="display:flex;gap:16px;font-size:13px;flex-wrap:wrap;">
+        <span style="color:#10b981;">✅ spam_rate &lt; 10%</span>
+        <span style="color:#10b981;">✅ bounce_rate &lt; 5%</span>
+        <span style="color:#94a3b8;">→ If either threshold exceeded: ALL sends halt immediately</span>
+      </div>
+    </div>
+  `;
+}
+
+async function executeRoofingRun() {
+  if (!confirm('Execute Memphis Roofing validation run? This will queue calls, SMS, and outreach for 20 roofing leads.')) return;
+  const r = await api('POST', '/validation/run-roofing', {});
+  if (r) {
+    showToast(`Run complete — ${r.leads_processed} leads | calls:${r.outreach?.calls_queued||0} sms:${r.outreach?.sms_queued||0}`, r.status === 'HARD_STOP' ? 'error' : 'success');
+    await renderRoofingValidation();
+  }
+}
+
+async function executeRoofingDryRun() {
+  const r = await api('POST', '/validation/run-roofing', { dry_run: true });
+  if (r) {
+    showToast(`DRY RUN — ${r.leads_processed} leads qualified, score≥${r.score_gate?.replace('>= ','')}, channel: ${r.channel_sequence}`, 'info');
+    await renderRoofingValidation();
+  }
+}
+
+async function logRoofingResponse() {
+  const leadId = document.getElementById('resp-lead-id').value.trim();
+  const type   = document.getElementById('resp-type').value;
+  if (!leadId) { showToast('Enter a lead ID first', 'warning'); return; }
+  const r = await api('POST', '/validation/roofing/respond', { lead_id: leadId, channel: 'manual', type });
+  if (r) {
+    showToast(`${type} logged — response_rate: ${r.response_rate} ${r.pass ? '✅ PASS' : '⏳ pending'}`, r.pass ? 'success' : 'info');
+    await renderRoofingValidation();
+  }
+}
+
+// ── END ROOFING PANEL ─────────────────────────────────────────────────────────
+
+async function renderValidation() {
+  // Show roofing validation run panel first — main purpose of this session
+  return renderRoofingValidation();
+}
+
+async function renderValidationFull() {
+  const content = document.getElementById('page-content');
+
+  // Initialize validation tables if not done
+  await api('POST', '/validation/initialize');
+
+  const [stateData, perfData, planData, decisionData] = await Promise.all([
+    api('GET', '/validation/state'),
+    api('GET', '/validation/performance'),
+    api('GET', '/validation/day-plan'),
+    api('GET', '/validation/scaling-decision'),
+  ]);
+
+  if (!stateData) { showPageError('Could not load validation state'); return; }
+
+  const s = stateData;
+  const p = perfData || {};
+  const d = decisionData || {};
+
+  const modeColor = s.system_mode === 'SCALE_READY' ? '#4ade80' : s.system_mode === 'PAUSED' ? '#ef4444' : '#f59e0b';
+  const modeBg = s.system_mode === 'SCALE_READY' ? '#052e16' : s.system_mode === 'PAUSED' ? '#450a0a' : '#431407';
+
+  // Update nav badge
+  const badge = document.getElementById('nav-val-badge');
+  if (badge) { badge.textContent = s.system_mode; badge.style.color = modeColor; }
+
+  const flagsHtml = (s.active_flags || []).length > 0
+    ? (s.active_flags || []).map(function(f) { return '<div style="display:flex;align-items:center;justify-content:space-between;background:#450a0a;border:1px solid #991b1b;border-radius:8px;padding:10px 14px;margin-bottom:8px;"><div style="display:flex;align-items:center;gap:8px;"><span style="color:#ef4444;font-size:16px;">🚩</span><span style="color:#f87171;font-weight:600;font-size:13px;">' + f + '</span></div><button onclick="resolveFlag(\'' + f + '\')" class="btn" style="background:#7f1d1d;color:#fca5a5;font-size:11px;padding:4px 10px;">Resolve</button></div>'; }).join('')
+    : '<div style="color:#4ade80;padding:12px;font-size:13px;">✅ No active flags — system healthy</div>';
+
+  const testsHtml = [
+    { key: 'test_a_email', label: 'Test A: Email Deliverability', desc: '≥70% inbox placement', icon: '📧' },
+    { key: 'test_b_sms', label: 'Test B: SMS Delivery', desc: '100% delivery + replies', icon: '📱' },
+    { key: 'test_c_demo', label: 'Test C: Demo Quality', desc: '≥4/5 demos rated YES', icon: '🌐' },
+    { key: 'test_d_leads', label: 'Test D: Live Campaign', desc: '≥5% response rate from 20 leads', icon: '📊' },
+  ].map(function(t) {
+    var passed = s.tests_passed[t.key];
+    var bg = passed ? '#052e16' : '#1e293b';
+    var border = passed ? '#166534' : '#334155';
+    var labelColor = passed ? '#4ade80' : '#f1f5f9';
+    var statusIcon = passed ? '✅' : '⏳';
+    var statusColor = passed ? '#4ade80' : '#64748b';
+    var statusText = passed ? 'PASS' : 'PENDING';
+    return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:10px;padding:16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">' +
+      '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<span style="font-size:22px;">' + t.icon + '</span>' +
+        '<div>' +
+          '<div style="font-weight:700;font-size:14px;color:' + labelColor + ';">' + t.label + '</div>' +
+          '<div style="font-size:12px;color:#94a3b8;margin-top:2px;">' + t.desc + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<span style="font-size:20px;">' + statusIcon + '</span>' +
+        '<span style="font-size:12px;font-weight:700;color:' + statusColor + ';">' + statusText + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  const limitsHtml = [
+    { label: 'Leads/day', used: s.live_counts?.leads_today, max: s.limits?.MAX_LEADS_PER_DAY },
+    { label: 'Emails/day', used: s.live_counts?.emails_today, max: s.limits?.MAX_EMAILS_PER_DAY },
+    { label: 'SMS/day', used: s.live_counts?.sms_today, max: s.limits?.MAX_SMS_PER_DAY },
+    { label: 'Calls/day', used: s.live_counts?.calls_today, max: s.limits?.MAX_CALLS_PER_DAY },
+  ].map(function(l) {
+    var pct = Math.round((l.used / l.max) * 100);
+    var barColor = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#3b82f6';
+    return '<div style="margin-bottom:14px;">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+        '<span style="font-size:13px;color:#94a3b8;">' + l.label + '</span>' +
+        '<span style="font-size:13px;font-weight:700;color:#f1f5f9;">' + l.used + ' / ' + l.max + '</span>' +
+      '</div>' +
+      '<div style="height:8px;background:#334155;border-radius:4px;">' +
+        '<div style="width:' + Math.min(pct,100) + '%;height:100%;background:' + barColor + ';border-radius:4px;transition:width 0.4s;"></div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var currentDay = planData?.validation_day || 1;
+  const dayPlanHtml = (planData?.plan || []).map(function(day) {
+    var isCurrent = day.current;
+    var dayBg = isCurrent ? '#0c1a3a' : '#1e293b';
+    var dayBorder = isCurrent ? '#1e40af' : '#334155';
+    var dayMb = isCurrent ? '10px' : '0';
+    var badgeBg = isCurrent ? '#1e40af' : '#334155';
+    var badgeColor = isCurrent ? '#93c5fd' : '#64748b';
+    var titleColor = isCurrent ? '#93c5fd' : '#94a3b8';
+    var curLabel = isCurrent ? '#60a5fa' : '#475569';
+    var tasksStr = '';
+    if (isCurrent) {
+      tasksStr = '<div style="font-size:12px;color:#64748b;margin-bottom:8px;"><strong style="color:#94a3b8;">Tasks:</strong></div>' +
+        (day.tasks||[]).map(function(t) { return '<div style="font-size:12px;color:#94a3b8;padding:2px 0 2px 16px;">• ' + t + '</div>'; }).join('') +
+        '<div style="margin-top:10px;padding:8px 12px;background:#1e3a5f;border-radius:6px;font-size:12px;"><strong style="color:#60a5fa;">Pass:</strong> <span style="color:#93c5fd;">' + day.pass_condition + '</span></div>';
+    }
+    return '<div style="background:' + dayBg + ';border:1px solid ' + dayBorder + ';border-radius:10px;padding:14px 16px;margin-bottom:8px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + dayMb + ';">' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<span style="background:' + badgeBg + ';color:' + badgeColor + ';width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;">D' + day.day + '</span>' +
+          '<span style="font-weight:700;font-size:13px;color:' + titleColor + ';">' + day.title + '</span>' +
+        '</div>' +
+        '<span style="font-size:11px;color:' + curLabel + ';">' + (isCurrent ? '▶ CURRENT' : '') + '</span>' +
+      '</div>' + tasksStr +
+    '</div>';
+  }).join('');
+
+  var passedConds = (d.passed_conditions||[]).map(function(c) { return '<div style="font-size:13px;color:#4ade80;margin-bottom:4px;">' + c + '</div>'; }).join('');
+  var failedConds = (d.failed_conditions||[]).map(function(c) { return '<div style="font-size:13px;color:#f87171;margin-bottom:4px;">' + c + '</div>'; }).join('');
+  var recsHtml = '';
+  if ((d.recommendations||[]).length > 0) {
+    recsHtml = '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #334155;"><div style="font-size:12px;color:#94a3b8;margin-bottom:6px;font-weight:600;">REQUIRED FIXES:</div>' +
+      (d.recommendations||[]).map(function(r) { return '<div style="font-size:12px;color:#fbbf24;margin-bottom:4px;">→ ' + r + '</div>'; }).join('') + '</div>';
+  }
+  var decBg = d.scaling_allowed ? '#052e16' : '#1e293b';
+  var decBorder = d.scaling_allowed ? '#166534' : '#334155';
+  var decTitleColor = d.scaling_allowed ? '#4ade80' : '#f59e0b';
+  var decTitle = d.scaling_allowed ? '🚀 SCALE_READY' : '🔒 SCALING BLOCKED';
+  const decisionHtml = '<div style="padding:16px;border-radius:10px;background:' + decBg + ';border:1px solid ' + decBorder + ';">' +
+    '<div style="font-size:20px;font-weight:800;color:' + decTitleColor + ';margin-bottom:12px;">' + decTitle + '</div>' +
+    passedConds + failedConds + recsHtml + '</div>';
+
+  var bounceColorVal = parseFloat((p.email?.bounce_rate||'0%').replace('%','')) > 5 ? '#ef4444' : '#4ade80';
+  var responseColorVal = parseFloat(p.leads?.response_rate||'0%') >= 5 ? '#4ade80' : '#ef4444';
+  const perfHtml = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
+    '<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;">' +
+      '<div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600;">📧 EMAIL METRICS</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Sent: <strong style="color:#f1f5f9;">' + (p.email?.sent||0) + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Open Rate: <strong style="color:#60a5fa;">' + (p.email?.open_rate||'N/A') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Click Rate: <strong style="color:#a78bfa;">' + (p.email?.click_rate||'N/A') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Bounce Rate: <strong style="color:' + bounceColorVal + '">' + (p.email?.bounce_rate||'0%') + '</strong></div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;">' +
+      '<div style="font-size:12px;color:#64748b;margin-bottom:6px;font-weight:600;">📊 LEAD METRICS</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Total: <strong style="color:#f1f5f9;">' + (p.leads?.total||0) + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Response Rate: <strong style="color:' + responseColorVal + '">' + (p.leads?.response_rate||'0%') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Close Rate: <strong style="color:#fbbf24;">' + (p.leads?.close_rate||'0%') + '</strong></div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Demo View Rate: <strong style="color:#a78bfa;">' + (p.demos?.view_rate||'0%') + '</strong></div>' +
+    '</div>' +
+  '</div>';
+
+  var resumeBtn = s.system_mode === 'PAUSED' ? '<button onclick="resumeSystem()" class="btn btn-success" style="font-size:13px;">\u25b6 Resume</button>' : '';
+  var scaleColor = s.scaling_allowed ? '#4ade80' : '#f87171';
+  var scaleText = s.scaling_allowed ? '\u2705 ALLOWED' : '\ud83d\udd12 BLOCKED';
+  content.innerHTML =
+    '<div style="background:' + modeBg + ';border:2px solid ' + modeColor + ';border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">' +
+      '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<span style="font-size:28px;">\ud83d\udee1\ufe0f</span>' +
+        '<div>' +
+          '<div style="font-size:11px;color:' + modeColor + ';font-weight:700;text-transform:uppercase;letter-spacing:1px;">System Mode</div>' +
+          '<div style="font-size:24px;font-weight:900;color:' + modeColor + ';">' + s.system_mode + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Validation Day</div>' +
+          '<div style="font-size:22px;font-weight:800;color:#f1f5f9;">' + s.validation_day + ' / 7</div>' +
+        '</div>' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Scaling</div>' +
+          '<div style="font-size:16px;font-weight:800;color:' + scaleColor + ';">' + scaleText + '</div>' +
+        '</div>' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:11px;color:#64748b;">Locked to</div>' +
+          '<div style="font-size:13px;font-weight:700;color:#f1f5f9;">' + (s.locked_city || 'Not set') + ' / ' + (s.locked_niche || 'Not set') + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          resumeBtn +
+          '<button onclick="runAutoPause()" class="btn btn-ghost" style="font-size:12px;padding:6px 12px;">\ud83d\udd0d Check Triggers</button>' +
+          '<button onclick="advanceDay()" class="btn" style="background:#1e40af;color:#93c5fd;font-size:12px;padding:6px 12px;">Day ' + s.validation_day + ' \u2192 ' + Math.min(7,s.validation_day+1) + ' \u203a</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-bottom:24px;">' +
+      '<div style="grid-column:1/3;">' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">\ud83e\uddea Validation Tests (4 Required)</h3>' +
+          testsHtml +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;">' +
+            '<button onclick="runTestA()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udce7 Run Test A</button>' +
+            '<button onclick="runTestB()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udcf1 Run Test B</button>' +
+            '<button onclick="runTestC()" class="btn btn-ghost" style="font-size:12px;">\ud83c\udf10 Score Demos (Test C)</button>' +
+            '<button onclick="runTestD()" class="btn btn-ghost" style="font-size:12px;">\ud83d\udcca Eval Campaign (Test D)</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udea9 Active Flags</h3>' +
+          flagsHtml +
+        '</div>' +
+        '<div class="card">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udcc8 Live Performance Metrics</h3>' +
+          perfHtml +
+        '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udd12 Daily Limits (ENFORCED)</h3>' +
+          '<div style="font-size:11px;color:#475569;margin-bottom:12px;font-style:italic;">VALIDATION PHASE ACTIVE \u2014 Scaling blocked</div>' +
+          limitsHtml +
+          '<div style="padding:10px;background:#0f172a;border-radius:8px;font-size:12px;color:#64748b;margin-top:8px;">' +
+            '\ud83c\udfd9\ufe0f Cities: <strong style="color:#f1f5f9;">1 only</strong> &nbsp;|&nbsp; \ud83c\udff7\ufe0f Niches: <strong style="color:#f1f5f9;">1 only</strong>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="margin-bottom:20px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+            '<h3 style="font-size:15px;font-weight:700;color:#f1f5f9;">\u2696\ufe0f Scaling Decision</h3>' +
+            '<button onclick="refreshDecision()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px;">Refresh</button>' +
+          '</div>' +
+          decisionHtml +
+          '<div style="display:flex;gap:8px;margin-top:12px;">' +
+            '<button onclick="viewReport()" class="btn btn-primary" style="flex:1;font-size:12px;">\ud83d\udccb Full Report</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card">' +
+          '<h3 style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f1f5f9;">\ud83d\udcc5 7-Day Validation Plan</h3>' +
+          dayPlanHtml +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+// ─── Validation action helpers ─────────────────────────────────────────────
+async function resolveFlag(flag) {
+  const notes = prompt('Resolution notes for "' + flag + '":');
+  if (notes === null) return;
+  const r = await api('POST', '/validation/resolve-flag', { flag, resolution_notes: notes });
+  if (r) { showToast('Flag "' + flag + '" resolved', 'success'); await renderValidationFull(); }
+}
+
+async function resumeSystem() {
+  if (!confirm('Resume system from PAUSED state? Ensure root causes are fixed first.')) return;
+  const r = await api('POST', '/validation/resume');
+  if (r) { showToast('System resumed — validation mode active', 'success'); await renderValidationFull(); }
+}
+
+async function runAutoPause() {
+  const r = await api('POST', '/validation/auto-pause-check');
+  if (r?.triggered) {
+    showToast('Auto-pause triggered: ' + r.reasons.join('; '), 'error');
+  } else {
+    showToast('All auto-pause checks passed — system healthy', 'success');
+  }
+  await renderValidationFull();
+}
+
+async function advanceDay() {
+  const r = await api('POST', '/validation/advance-day');
+  if (r) { showToast('Advanced to Day ' + r.validation_day, 'info'); await renderValidationFull(); }
+}
+
+async function refreshDecision() {
+  const r = await api('GET', '/validation/scaling-decision');
+  if (r) {
+    showToast(r.scaling_allowed ? '\ud83d\ude80 SCALE_READY — All conditions met!' : '\ud83d\udd12 Scaling still blocked — conditions not met', r.scaling_allowed ? 'success' : 'warning');
+    await renderValidationFull();
+  }
+}
+
+async function viewReport() {
+  const r = await api('GET', '/validation/report');
+  if (!r) return;
+  var decBg2 = r.scaling_decision?.allowed ? '#052e16' : '#450a0a';
+  var decColor2 = r.scaling_decision?.allowed ? '#4ade80' : '#f87171';
+  var fixesHtml = '';
+  if (r.required_fixes?.length > 0) {
+    fixesHtml = '<div style="margin-top:12px;"><div style="font-weight:700;color:#f59e0b;margin-bottom:8px;">REQUIRED FIXES:</div>' +
+      (r.required_fixes||[]).map(function(fx) { return '<div style="font-size:12px;color:#fbbf24;margin-bottom:4px;">\u2192 ' + fx + '</div>'; }).join('') +
+      '</div>';
+  }
+  const reportHtml =
+    '<h3 style="margin-bottom:16px;font-size:16px;font-weight:700;">\ud83d\udccb Final Validation Report</h3>' +
+    '<div style="font-size:12px;color:#64748b;margin-bottom:12px;">Generated: ' + r.generated_at + '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#f59e0b;margin-bottom:8px;">DELIVERABILITY</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Email: ' + r.deliverability_status?.test_a_email + ' | SMS: ' + r.deliverability_status?.test_b_sms + '</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Domain Verified: ' + r.deliverability_status?.domain_verified + ' | Twilio: ' + r.deliverability_status?.twilio_configured + '</div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#a78bfa;margin-bottom:8px;">DEMO QUALITY</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Score: ' + r.demo_quality_score?.score + ' | View Rate: ' + r.demo_quality_score?.view_rate + '</div>' +
+    '</div>' +
+    '<div style="background:#0f172a;border-radius:8px;padding:14px;margin-bottom:12px;">' +
+      '<div style="font-weight:700;color:#34d399;margin-bottom:8px;">RESPONSE RATE</div>' +
+      '<div style="font-size:13px;color:#94a3b8;">Rate: ' + r.response_rate?.rate + ' | Responded: ' + r.response_rate?.leads_responded + '/' + r.response_rate?.leads_contacted + '</div>' +
+    '</div>' +
+    '<div style="background:' + decBg2 + ';border-radius:8px;padding:14px;">' +
+      '<div style="font-weight:700;color:' + decColor2 + ';font-size:15px;">' + r.scaling_decision?.verdict + '</div>' +
+    '</div>' + fixesHtml;
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:2000;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = '<div style="background:#1e293b;border:1px solid #334155;border-radius:16px;padding:28px;max-width:600px;width:90%;max-height:90vh;overflow-y:auto;">' +
+    reportHtml +
+    '<button onclick="this.closest(\'.modal-overlay\').remove()" class="btn btn-ghost" style="margin-top:16px;width:100%;">Close</button>' +
+  '</div>';
+  modal.className = 'modal-overlay';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
+async function runTestA() {
+  const inbox = prompt('Test A — Email Deliverability\nHow many of 10 test emails landed in PRIMARY inbox? (enter number 0-10)');
+  if (inbox === null) return;
+  const inboxCount = parseInt(inbox);
+  if (isNaN(inboxCount)) return showToast('Invalid number', 'error');
+  const spam = 10 - inboxCount;
+  const r = await api('POST', '/validation/test-a', {
+    manual_results: { total_sent: 10, inbox_count: inboxCount, spam_count: spam, bounce_count: 0, notes: 'Manual test entry' }
+  });
+  if (r) {
+    showToast('Test A: ' + r.status + ' — ' + r.inbox_rate + ' inbox rate', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidationFull();
+  }
+}
+
+async function runTestB() {
+  const delivered = prompt('Test B — SMS Delivery\nHow many of 10 SMS were delivered? (enter number 0-10)');
+  if (delivered === null) return;
+  const deliveredCount = parseInt(delivered);
+  if (isNaN(deliveredCount)) return showToast('Invalid number', 'error');
+  const reply = confirm('Did you receive any replies back to the SMS?');
+  const r = await api('POST', '/validation/test-b', {
+    manual_results: { total_sent: 10, delivered_count: deliveredCount, filtered_count: 10 - deliveredCount, reply_received: reply, notes: 'Manual test entry' }
+  });
+  if (r) {
+    showToast('Test B: ' + r.status + ' — ' + r.delivery_rate + ' delivery', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidationFull();
+  }
+}
+
+async function runTestC() {
+  const demos = await api('GET', '/api/demos');
+  const activeDemos = (demos?.demos || []).filter(function(d) { return d.status === 'ACTIVE'; }).slice(0, 5);
+  if (activeDemos.length === 0) return showToast('No active demos to evaluate — generate some demos first', 'warning');
+
+  let passCount = 0;
+  const scores = [];
+  for (const demo of activeDemos) {
+    const url = demo.demo_url || '';
+    const yn = confirm('Test C — Demo Quality\n\nBusiness: ' + demo.business_name + '\nIndustry: ' + demo.industry + ' | City: ' + demo.city + '\nURL: ' + url + '\n\nDoes this look like a REAL business website worth $500?\n\nOK = YES (pass) | Cancel = NO (fail)');
+    scores.push({ demo_id: demo.id, looks_real: yn, worth_500: yn, notes: yn ? 'Looks professional' : 'Needs improvement' });
+    if (yn) passCount++;
+  }
+
+  const r = await api('POST', '/validation/test-c', { demo_scores: scores });
+  if (r) {
+    showToast('Test C: ' + r.status + ' — ' + r.quality_score + ' demos rated YES', r.status === 'PASS' ? 'success' : 'error');
+    await renderValidationFull();
+  }
+}
+
+async function runTestD() {
+  if (!confirm('Test D — Calculate response rate from last 7 days of leads?\n\nThis will use your actual DB data.')) return;
+  const r = await api('POST', '/validation/test-d', { use_db_data: true });
+  if (r) {
+    showToast('Test D: ' + r.status + ' — ' + r.response_rate + ' response rate', r.status === 'PASS' ? 'success' : 'warning');
+    await renderValidationFull();
+  }
+}
+
+
+// ============= MICRO-SCALE =============
+async function renderMicroScale() {
+  const content = document.getElementById('page-content');
+  const data = await api('GET', '/micro-scale/status');
+  if (!data) { showPageError('Could not load micro-scale status'); return; }
+
+  const statusColor = { SCALE: '#10b981', ADJUST: '#f59e0b', HOLD: '#ef4444' }[data.next_action] || '#64748b';
+  const trackIcons = { sent: '📤', opened: '👁️', replied: '💬', interested: '⭐', clicked: '🔗', closed: '✅' };
+
+  content.innerHTML = `
+    <!-- KPI STRIP -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:24px;">
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Campaign Status</div>
+        <div style="font-size:20px;font-weight:800;color:#10b981;margin-top:6px;">${data.status}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Memphis, TN</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Leads Scraped</div>
+        <div style="font-size:28px;font-weight:800;color:#60a5fa;margin-top:6px;">${data.leads_scraped}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">${data.leads_with_email} have email</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Emails Sent</div>
+        <div style="font-size:28px;font-weight:800;color:#a78bfa;margin-top:6px;">${data.emails_sent}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Limit: ${data.daily_limits.emails}/day</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Reply Rate</div>
+        <div style="font-size:28px;font-weight:800;color:${data.reply_rate >= 5 ? '#10b981' : '#f59e0b'};margin-top:6px;">${data.reply_rate}%</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Goal: ≥ 5% to PASS</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Interested</div>
+        <div style="font-size:28px;font-weight:800;color:#fb923c;margin-top:6px;">${data.interested_leads}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">Goal: ≥ 2 → strong signal</div>
+      </div>
+      <div class="kpi-card">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Deals Closed</div>
+        <div style="font-size:28px;font-weight:800;color:#4ade80;margin-top:6px;">${data.deals_closed}</div>
+        <div style="font-size:12px;color:#475569;margin-top:2px;">&nbsp;</div>
+      </div>
+    </div>
+
+    <!-- NEXT ACTION BANNER -->
+    <div style="background:${statusColor}22;border:1px solid ${statusColor};border-radius:12px;padding:16px 20px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700;margin-bottom:4px;">Engine Decision</div>
+        <div style="font-size:22px;font-weight:900;color:${statusColor};">
+          ${{ SCALE: '🚀 SCALE', ADJUST: '⚠️ ADJUST', HOLD: '⏸️ HOLD' }[data.next_action]}
+        </div>
+        <div style="font-size:13px;color:#94a3b8;margin-top:4px;">
+          ${{ SCALE: 'Reply rate ≥ 5% and 2+ positive responses — ready to scale volume.', ADJUST: 'Emails sent but reply rate below threshold — adjust copy or targeting.', HOLD: 'Insufficient data — send more Day 1 emails first.' }[data.next_action]}
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="sendDay1Batch()" id="btn-send-day1">📤 Send Day 1 Batch</button>
+        <button class="btn btn-ghost" onclick="refreshMicroScale()" style="font-size:13px;">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <!-- SUCCESS METRICS -->
+    <div class="card" style="margin-bottom:24px;">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">📊 Success Metrics (First 20 Leads)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Reply Rate ≥ 5%</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">${data.pass_reply_rate ? '✅' : '❌'}</span>
+            <span style="font-size:15px;font-weight:700;color:${data.pass_reply_rate ? '#10b981' : '#ef4444'};">${data.reply_rate}% / 5%</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">≥ 2 Positive Responses</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">${data.pass_positive_responses ? '✅' : '❌'}</span>
+            <span style="font-size:15px;font-weight:700;color:${data.pass_positive_responses ? '#10b981' : '#ef4444'};">${data.interested_leads} / 2 needed</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Daily Email Limit</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">📧</span>
+            <span style="font-size:15px;font-weight:700;color:#60a5fa;">${data.emails_sent} / ${data.daily_limits.emails} sent today</span>
+          </div>
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:12px;">
+          <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Clicked Demo Link</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:20px;">🔗</span>
+            <span style="font-size:15px;font-weight:700;color:#a78bfa;">${data.clicked_demo} leads clicked</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEADS TABLE -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;">📋 Memphis Leads — Outreach Tracker</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="showAddEmailModal()">➕ Add Email Address</button>
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="exportLeadsCSV()">📥 Export CSV</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Business</th>
+              <th>Industry</th>
+              <th>Phone</th>
+              <th>Email</th>
+              <th>Day</th>
+              <th>Sent</th>
+              <th>Opened</th>
+              <th>Replied</th>
+              <th>Interested</th>
+              <th>Clicked</th>
+              <th>Closed</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.leads.map(l => `
+              <tr id="lead-row-${l.id}">
+                <td>
+                  <div style="font-weight:600;color:#f1f5f9;">${l.business_name}</div>
+                  <div style="font-size:11px;color:#64748b;">${l.city}, ${l.state}</div>
+                </td>
+                <td><span style="font-size:12px;color:#94a3b8;">${l.industry}</span></td>
+                <td><span style="font-size:12px;font-family:monospace;">${l.phone}</span></td>
+                <td>
+                  ${l.email
+                    ? `<span style="font-size:12px;color:#34d399;">${l.email}</span>`
+                    : `<button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;" onclick="addEmailInline('${l.id}','${l.business_name}')">+ Add Email</button>`
+                  }
+                </td>
+                <td><span style="background:#1e293b;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:700;">Day ${l.outreach_day}</span></td>
+                ${['sent','opened','replied','interested','clicked','closed'].map(k => `
+                  <td style="text-align:center;">
+                    <span style="font-size:18px;cursor:${!l.tracking[k] ? 'pointer' : 'default'};" 
+                          onclick="${!l.tracking[k] ? `trackEvent('${l.id}','${k}')` : ''}"
+                          title="${l.tracking[k] ? k+' ✓' : 'Click to mark '+k}">
+                      ${l.tracking[k] ? '✅' : '⬜'}
+                    </span>
+                  </td>
+                `).join('')}
+                <td>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    ${l.email_ready && !l.tracking.sent
+                      ? `<button class="btn btn-primary" style="font-size:11px;padding:3px 8px;" onclick="sendSingleDay1('${l.id}')">📤 Day 1</button>`
+                      : ''
+                    }
+                    ${l.email_ready && l.tracking.sent && !l.tracking.replied
+                      ? `<button class="btn btn-ghost" style="font-size:11px;padding:3px 8px;" onclick="sendFollowup('${l.id}')">🔄 Follow Up</button>`
+                      : ''
+                    }
+                    <a href="${l.demo_url}" target="_blank" class="btn btn-ghost" style="font-size:11px;padding:3px 8px;">🔗 Demo</a>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ADD EMAIL MODAL -->
+    <div class="modal" id="add-email-modal">
+      <div class="modal-box" style="max-width:440px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h3 style="font-size:16px;font-weight:700;">Add Email Address</h3>
+          <button onclick="closeModal('add-email-modal')" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:20px;">×</button>
+        </div>
+        <div id="add-email-form-content"></div>
+      </div>
+    </div>
+
+    <!-- SEND RESULT PANEL -->
+    <div id="send-result-panel" style="display:none;margin-top:20px;"></div>
+  `;
+}
+
+async function sendDay1Batch() {
+  const btn = document.getElementById('btn-send-day1');
+  if (btn) { btn.textContent = '⏳ Sending…'; btn.disabled = true; }
+  try {
+    const r = await api('POST', '/micro-scale/send-day1', { dry_run: false });
+    if (!r) { if (btn) { btn.textContent = '📤 Send Day 1 Batch'; btn.disabled = false; } return; }
+    if (r.sent === 0 && r.needs_emails) {
+      showToast(`No emails yet — add email addresses to ${r.needs_emails.length} leads first`, 'warning');
+      const panel = document.getElementById('send-result-panel');
+      if (panel) {
+        panel.style.display = 'block';
+        panel.innerHTML = `
+          <div class="alert-warning" style="margin-bottom:16px;">
+            <div style="font-weight:700;margin-bottom:8px;">⚠️ No email addresses found for Memphis leads</div>
+            <div style="font-size:13px;color:#e0c070;">OSM data doesn't include email addresses. Add them manually using the "+ Add Email" button next to each lead, or source them from Google Maps / business websites.</div>
+            <div style="margin-top:12px;font-size:12px;">
+              <strong>Leads needing emails (all ${r.needs_emails?.length} leads):</strong><br>
+              ${(r.needs_emails||[]).slice(0,5).map(l => `• ${l.business_name} — ${l.phone}`).join('<br>')}
+              ${(r.needs_emails||[]).length > 5 ? `<br>… and ${r.needs_emails.length - 5} more` : ''}
+            </div>
+          </div>
+        `;
+      }
+    } else if (r.sent > 0) {
+      showToast(`✅ ${r.sent} Day 1 email(s) sent!`, 'success');
+      await renderMicroScale();
+    }
+  } catch(e) { showToast('Send failed: ' + e.message, 'error'); }
+  if (btn) { btn.textContent = '📤 Send Day 1 Batch'; btn.disabled = false; }
+}
+
+async function sendSingleDay1(leadId) {
+  const r = await api('POST', '/micro-scale/send-day1', { lead_ids: [leadId], dry_run: false });
+  if (!r) return;
+  if (r.sent > 0) { showToast('✅ Day 1 email sent!', 'success'); await renderMicroScale(); }
+  else { showToast('Send failed: ' + (r.results?.[0]?.error || 'unknown'), 'error'); }
+}
+
+async function sendFollowup(leadId) {
+  const r = await api('POST', '/micro-scale/send-followup', { lead_id: leadId, warmup_day: 1, reply_rate: 0, total_sends: 14 });
+  if (!r) return;
+  if (r.sent) { showToast('✅ Follow-up sent!', 'success'); await renderMicroScale(); }
+  else { showToast('Follow-up failed: ' + (r.error || 'unknown'), 'error'); }
+}
+
+async function trackEvent(leadId, event) {
+  const r = await api('POST', '/micro-scale/track', { lead_id: leadId, event });
+  if (!r) return;
+  showToast(`${event} marked for ${leadId}`, 'success');
+  // Update just the cell without full re-render
+  await renderMicroScale();
+}
+
+function addEmailInline(leadId, businessName) {
+  document.getElementById('add-email-form-content').innerHTML = `
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px;color:#94a3b8;">Business</label>
+      <div style="font-size:14px;font-weight:600;color:#f1f5f9;margin-top:4px;">${businessName}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:12px;color:#94a3b8;">Email Address</label>
+      <input class="input" id="inline-email-input" type="email" placeholder="owner@business.com" style="width:100%;margin-top:4px;" />
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary" style="flex:1;" onclick="saveEmailInline('${leadId}')">Save & Enable Outreach</button>
+      <button class="btn btn-ghost" onclick="closeModal('add-email-modal')">Cancel</button>
+    </div>
+  `;
+  openModal('add-email-modal');
+}
+
+function showAddEmailModal() {
+  // Show dropdown of all leads without email
+  document.getElementById('add-email-form-content').innerHTML = `
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:16px;">Click "+ Add Email" next to any lead in the table to add their email address. Email addresses can be sourced from Google Maps, their Facebook page, or the business website.</div>
+    <button class="btn btn-ghost" onclick="closeModal('add-email-modal')" style="width:100%;">Got it</button>
+  `;
+  openModal('add-email-modal');
+}
+
+async function saveEmailInline(leadId) {
+  const emailVal = document.getElementById('inline-email-input')?.value?.trim();
+  if (!emailVal || !emailVal.includes('@')) { showToast('Enter a valid email', 'warning'); return; }
+  const r = await api('PATCH', `/micro-scale/leads/${leadId}`, { email: emailVal });
+  if (!r) return;
+  closeModal('add-email-modal');
+  showToast('Email saved — lead ready for outreach!', 'success');
+  await renderMicroScale();
+}
+
+function exportLeadsCSV() {
+  const rows = [['ID','Business','Industry','Phone','Email','City','State','Demo URL','Sent','Replied','Interested','Closed']];
+  document.querySelectorAll('#page-content tbody tr').forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    if (cells.length > 0) {
+      rows.push([
+        tr.id.replace('lead-row-',''),
+        cells[0]?.querySelector('div')?.textContent || '',
+        cells[1]?.textContent?.trim() || '',
+        cells[2]?.textContent?.trim() || '',
+        cells[3]?.textContent?.trim() || '',
+        '', '', '',
+        cells[5]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[7]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[8]?.textContent?.includes('✅') ? 'YES' : 'NO',
+        cells[10]?.textContent?.includes('✅') ? 'YES' : 'NO',
+      ]);
+    }
+  });
+  const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'memphis-leads.csv';
+  a.click();
+}
+
+async function refreshMicroScale() { await renderMicroScale(); showToast('Refreshed', 'info'); }
+
+// ============= ENVIRONMENT ISOLATION PAGE =============
+async function renderIsolation() {
+  const content = document.getElementById('page-content');
+  const [isoData, metricsData, queueData, breachData] = await Promise.all([
+    api('GET', '/isolation/status'),
+    api('GET', '/isolation/metrics'),
+    api('GET', '/isolation/queue'),
+    api('GET', '/isolation/breach/log'),
+  ]);
+
+  if (!isoData) { showPageError('Could not load isolation status'); return; }
+
+  const env = isoData.current_env || 'PRODUCTION';
+  const envColor = env === 'TEST' ? '#f59e0b' : '#10b981';
+  const envBg   = env === 'TEST' ? '#431407' : '#052e16';
+  const envBorder = env === 'TEST' ? '#92400e' : '#166534';
+
+  const tm = metricsData?.TEST || {};
+  const pm = metricsData?.PRODUCTION || {};
+
+  const rulesHtml = Object.entries(isoData.isolation_rules || {}).map(([key, val]) => {
+    const r = val;
+    return `<div style="display:flex;align-items:flex-start;gap:12px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:8px;margin-bottom:8px;">
+      <span style="font-size:20px;margin-top:2px;">✅</span>
+      <div>
+        <div style="font-weight:700;font-size:13px;color:#f1f5f9;">${r.rule || key}</div>
+        ${r.test_pattern ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">TEST: <code style="color:#f59e0b;">${r.test_pattern}</code> &nbsp;|&nbsp; PROD: <code style="color:#10b981;">${r.prod_pattern}</code></div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const breaches = breachData?.breaches || [];
+  const breachHtml = breaches.length === 0
+    ? '<div style="color:#10b981;font-size:13px;padding:12px;">✅ No breach events recorded</div>'
+    : breaches.slice(0, 5).map(b => `<div style="padding:10px;background:#450a0a;border:1px solid #991b1b;border-radius:8px;margin-bottom:6px;font-size:12px;">
+        <div style="color:#f87171;font-weight:700;">🚨 ${b.reason}</div>
+        <div style="color:#94a3b8;margin-top:4px;">Lead: ${b.lead_id} — ${b.lead_email}</div>
+        <div style="color:#475569;margin-top:2px;">${new Date(b.timestamp).toLocaleString()}</div>
+      </div>`).join('');
+
+  const queueJobs = queueData?.jobs || [];
+  const queueHtml = queueJobs.length === 0
+    ? '<div style="color:#64748b;font-size:13px;padding:12px;">Queue is empty</div>'
+    : queueJobs.map(j => `<div style="padding:8px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="color:#f1f5f9;font-weight:600;">${j.action}</div>
+          <div style="color:#64748b;">job.env=<span style="color:${j.env === 'TEST' ? '#f59e0b' : '#10b981'};">${j.env}</span> &nbsp;|&nbsp; lead: ${j.lead_id || '—'}</div>
+        </div>
+        <span class="badge" style="background:${j.will_execute ? '#052e16' : '#431407'};color:${j.will_execute ? '#4ade80' : '#f59e0b'};padding:3px 8px;border-radius:9999px;font-size:11px;">${j.will_execute ? '▶ EXECUTE' : '⏭ SKIP'}</span>
+      </div>`).join('');
+
+  content.innerHTML = `
+    <!-- ISOLATION STATUS BANNER -->
+    <div style="background:${envBg};border:2px solid ${envBorder};border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <span style="font-size:32px;">🛡️</span>
+        <div>
+          <div style="font-size:11px;color:${envColor};font-weight:700;text-transform:uppercase;letter-spacing:1px;">Isolation Status</div>
+          <div style="font-size:22px;font-weight:900;color:${envColor};">ENVIRONMENT_ISOLATION_ACTIVE</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:2px;">
+            Current ENV: <strong style="color:${envColor};">${env}</strong> &nbsp;·&nbsp; test_safe: ✅ &nbsp;·&nbsp; production_safe: ✅
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn" style="background:${env === 'TEST' ? '#1e40af' : '#92400e'};color:white;font-size:12px;" onclick="switchIsolationEnv('${env === 'TEST' ? 'PRODUCTION' : 'TEST'}')">
+          Switch to ${env === 'TEST' ? 'PRODUCTION' : 'TEST'}
+        </button>
+        <button class="btn btn-ghost" style="font-size:12px;" onclick="renderIsolation()">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <!-- OUTPUT JSON -->
+    <div class="card" style="margin-bottom:24px;border-color:#a855f7;">
+      <div style="font-size:14px;font-weight:700;color:#a855f7;margin-bottom:10px;">📦 Canonical Output JSON (Section 7)</div>
+      <pre style="background:#0f172a;border-radius:8px;padding:16px;font-size:12px;color:#a3e635;overflow-x:auto;">${JSON.stringify({
+        status: 'ENVIRONMENT_ISOLATION_ACTIVE',
+        mode: env,
+        test_emails_blocked_in_production: env === 'PRODUCTION',
+        test_safe: true,
+        production_safe: true,
+      }, null, 2)}</pre>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+      <!-- RULES -->
+      <div class="card">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">⚙️ Active Isolation Rules</div>
+        ${rulesHtml}
+      </div>
+
+      <!-- METRICS SEPARATION -->
+      <div class="card">
+        <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">📊 Separated Metrics (Rule 5)</div>
+        <div style="margin-bottom:14px;">
+          <div style="font-size:11px;color:#f59e0b;font-weight:700;text-transform:uppercase;margin-bottom:8px;">🧪 TEST Environment</div>
+          <div style="background:#0f172a;border-radius:8px;padding:12px;font-size:13px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>Sent: <strong style="color:#f1f5f9;">${tm.emails_sent || 0}</strong></div>
+              <div>Replied: <strong style="color:#10b981;">${tm.emails_replied || 0}</strong></div>
+              <div>Opened: <strong style="color:#60a5fa;">${tm.emails_opened || 0}</strong></div>
+              <div>Clicked: <strong style="color:#a78bfa;">${tm.emails_clicked || 0}</strong></div>
+            </div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155;">
+              Reply Rate: <strong style="color:${(tm.reply_rate||0) >= 5 ? '#10b981' : '#f59e0b'};">${tm.reply_rate || 0}%</strong>
+              &nbsp;·&nbsp; Breaches: <strong style="color:${(tm.breach_events||0) > 0 ? '#ef4444' : '#4ade80'};">${tm.breach_events || 0}</strong>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#10b981;font-weight:700;text-transform:uppercase;margin-bottom:8px;">✅ PRODUCTION Environment</div>
+          <div style="background:#0f172a;border-radius:8px;padding:12px;font-size:13px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <div>Sent: <strong style="color:#f1f5f9;">${pm.emails_sent || 0}</strong></div>
+              <div>Replied: <strong style="color:#10b981;">${pm.emails_replied || 0}</strong></div>
+              <div>Opened: <strong style="color:#60a5fa;">${pm.emails_opened || 0}</strong></div>
+              <div>Clicked: <strong style="color:#a78bfa;">${pm.emails_clicked || 0}</strong></div>
+            </div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #334155;">
+              Reply Rate: <strong style="color:${(pm.reply_rate||0) >= 5 ? '#10b981' : '#ef4444'};">${pm.reply_rate || 0}%</strong>
+              &nbsp;·&nbsp; Breaches: <strong style="color:${(pm.breach_events||0) > 0 ? '#ef4444' : '#4ade80'};">${pm.breach_events || 0}</strong>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;padding:8px;background:#0c1a3a;border-radius:6px;font-size:11px;color:#60a5fa;">
+          ℹ️ Metrics are never combined across environments.
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
+      <!-- BREACH LOG -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-size:14px;font-weight:700;color:#f1f5f9;">🚨 Breach Log (Rule 6 Hard Stop)</div>
+          ${breaches.length > 0 ? `<button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="clearBreachLog()">Clear</button>` : ''}
+        </div>
+        ${breachHtml}
+        <div style="margin-top:8px;font-size:11px;color:#475569;">Total breach events: <strong style="color:${breaches.length > 0 ? '#ef4444' : '#4ade80'};">${breachData?.total_breaches || 0}</strong></div>
+      </div>
+
+      <!-- JOB QUEUE -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="font-size:14px;font-weight:700;color:#f1f5f9;">📋 Job Queue (Rule 1 Isolation)</div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px;" onclick="enqueueTestJob()">+ Enqueue Test</button>
+            <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;" onclick="processQueue()">▶ Process</button>
+          </div>
+        </div>
+        ${queueHtml}
+        <div style="margin-top:8px;font-size:11px;color:#475569;">Queue depth: ${queueData?.queue_depth || 0} job(s)</div>
+      </div>
+    </div>
+
+    <!-- PIPELINE CHECK TOOL -->
+    <div class="card" style="margin-bottom:24px;">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">🔒 Pipeline Guard (Rule 2 + 6) — Quick Check</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+        <div><label style="font-size:12px;color:#94a3b8;">Lead ID</label>
+          <input class="input" id="pg-lead-id" placeholder="memphis-001" style="width:100%;margin-top:4px;"></div>
+        <div><label style="font-size:12px;color:#94a3b8;">Email</label>
+          <input class="input" id="pg-email" placeholder="owner@business.com" style="width:100%;margin-top:4px;"></div>
+        <div><label style="font-size:12px;color:#94a3b8;">Lead Type</label>
+          <select class="select" id="pg-lead-type" style="width:100%;margin-top:4px;">
+            <option value="REAL">REAL</option>
+            <option value="TEST">TEST</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="runPipelineCheck()" style="white-space:nowrap;">Check Pipeline</button>
+      </div>
+      <div id="pg-result" style="margin-top:12px;display:none;"></div>
+    </div>
+
+    <!-- DEMO URL VALIDATOR -->
+    <div class="card">
+      <div style="font-size:14px;font-weight:700;color:#f1f5f9;margin-bottom:12px;">🌐 Demo URL Validator (Rule 3)</div>
+      <div style="background:#0f172a;border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:#94a3b8;">
+        <strong style="color:#f59e0b;">TEST</strong> env → URLs must contain <code style="color:#fbbf24;">/demo/test/</code> &nbsp;|&nbsp;
+        <strong style="color:#10b981;">PRODUCTION</strong> env → URLs must NOT contain <code style="color:#4ade80;">/test/</code>
+      </div>
+      <div style="display:flex;gap:12px;align-items:end;">
+        <div style="flex:1;"><label style="font-size:12px;color:#94a3b8;">Demo URL to validate</label>
+          <input class="input" id="demo-url-input" placeholder="https://websitedemopro.org/demo/dryve-cleaners-memphis" style="width:100%;margin-top:4px;"></div>
+        <button class="btn btn-primary" onclick="checkDemoUrl()" style="white-space:nowrap;">Validate URL</button>
+      </div>
+      <div id="demo-url-result" style="margin-top:12px;display:none;"></div>
+    </div>
+  `;
+}
+
+async function switchIsolationEnv(mode) {
+  const r = await api('POST', '/integrity/env', { mode });
+  if (r) {
+    showToast(`Switched to ${r.mode}`, r.mode === 'TEST' ? 'warning' : 'success');
+    await renderIsolation();
+  }
+}
+
+async function runPipelineCheck() {
+  const leadId = document.getElementById('pg-lead-id')?.value?.trim();
+  const email   = document.getElementById('pg-email')?.value?.trim();
+  const leadType = document.getElementById('pg-lead-type')?.value;
+  if (!leadId || !email) { showToast('Fill in lead ID and email', 'warning'); return; }
+
+  const r = await api('POST', '/isolation/pipeline/check', {
+    lead_id: leadId, lead_email: email, lead_type: leadType,
+  });
+
+  const result = document.getElementById('pg-result');
+  if (!r || !result) return;
+  result.style.display = 'block';
+
+  if (r.status === 'ENVIRONMENT_BREACH') {
+    result.innerHTML = `<div class="alert-error"><strong>🚨 ENVIRONMENT_BREACH — All sends halted!</strong><br>${r.detail}</div>`;
+  } else if (r.send_blocked) {
+    result.innerHTML = `<div class="alert-warning"><strong>⚠️ PIPELINE_ENV_MISMATCH — Send blocked</strong><br>${r.reason}</div>`;
+  } else {
+    result.innerHTML = `<div class="alert-success"><strong>✅ Pipeline approved</strong><br>Lead environment matches current pipeline — send allowed.</div>`;
+  }
+}
+
+async function checkDemoUrl() {
+  const url = document.getElementById('demo-url-input')?.value?.trim();
+  if (!url) { showToast('Enter a demo URL', 'warning'); return; }
+
+  const r = await api('POST', '/isolation/demo/check-url', { url });
+  const result = document.getElementById('demo-url-result');
+  if (!r || !result) return;
+  result.style.display = 'block';
+
+  if (r.valid) {
+    result.innerHTML = `<div class="alert-success"><strong>✅ Valid for ${r.env} environment</strong><br>${r.reason}</div>`;
+  } else {
+    result.innerHTML = `<div class="alert-error"><strong>❌ Invalid for ${r.env} environment</strong><br>${r.reason}<br><small style="color:#f87171;margin-top:4px;display:block;">Expected: <code>${r.expected_pattern}</code></small></div>`;
+  }
+}
+
+async function enqueueTestJob() {
+  const env = (await api('GET', '/integrity/env'))?.mode || 'PRODUCTION';
+  const r = await api('POST', '/isolation/queue/enqueue', {
+    action: 'SEND_EMAIL_DAY1', env, lead_id: 'memphis-test', email: 'test@example.com',
+  });
+  if (r?.enqueued) { showToast(`Job enqueued (env=${r.job?.env})`, 'success'); await renderIsolation(); }
+}
+
+async function processQueue() {
+  const r = await api('POST', '/isolation/queue/process', {});
+  if (r) {
+    showToast(`Processed: ${r.executed} executed, ${r.skipped} ENV_MISMATCH_SKIPPED`, r.skipped > 0 ? 'warning' : 'success');
+    await renderIsolation();
+  }
+}
+
+async function clearBreachLog() {
+  if (!confirm('Clear all breach events from the log?')) return;
+  await api('POST', '/isolation/breach/clear', {});
+  showToast('Breach log cleared', 'info');
+  await renderIsolation();
+}
+
+// ============= AUTONOMOUS ENGINE PAGE =============
+async function renderEngine() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:#475569;"><div class="spinner" style="font-size:24px;">🤖</div><div style="margin-top:12px;">Loading engine...</div></div>';
+
+  const [status, health, log, callQueue] = await Promise.all([
+    api('GET', '/engine/status'),
+    api('GET', '/engine/health'),
+    api('GET', '/engine/log?limit=10'),
+    api('GET', '/engine/calls/queue'),
+  ]);
+
+  if (!status) { showPageError('Could not load engine status'); return; }
+
+  const paused = status.engine_paused;
+  const env = status.current_env || 'PRODUCTION';
+  const ch = status.channels || {};
+  const lastRun = status.last_run;
+  const gate = (health && health.scaling_gate) || {};
+  const gateColor = ({ PROCEED:'#10b981', THROTTLE:'#f59e0b', HOLD:'#f97316', STOP_ALL:'#ef4444' })[gate.action] || '#64748b';
+  const gateIcon  = ({ PROCEED:'✅', THROTTLE:'⚠️', HOLD:'⏸️', STOP_ALL:'🛑' })[gate.action] || '❓';
+  const hColor = ({ HEALTHY:'#10b981', WARNING:'#f59e0b', CRITICAL:'#ef4444' })[(health && health.health)] || '#64748b';
+  const campaignM = (health && health.campaign_metrics) || {};
+
+  function chBar(label, icon, used, cap, color, note) {
+    note = note || '';
+    const pct = cap > 0 ? Math.min(100, Math.round((used/cap)*100)) : 0;
+    const rem = cap - used;
+    return '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
+        '<span style="font-size:17px;">' + icon + '</span>' +
+        '<span style="font-weight:700;color:#f1f5f9;font-size:13px;">' + label + '</span>' +
+        '<span style="margin-left:auto;font-size:12px;color:#94a3b8;">' + used + ' / ' + cap + '</span>' +
+      '</div>' +
+      '<div style="height:5px;background:#334155;border-radius:3px;overflow:hidden;">' +
+        '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:3px;"></div>' +
+      '</div>' +
+      '<div style="margin-top:5px;font-size:10px;color:#64748b;">' + rem + ' remaining' + (note ? ' · '+note : '') + '</div>' +
+    '</div>';
+  }
+
+  const runs = (log && log.runs) || [];
+  const logRows = runs.map(function(r) {
+    const sc = ({ COMPLETED:'#10b981', HARD_STOP:'#ef4444', ERROR:'#f59e0b', PAUSED:'#64748b', RUNNING:'#3b82f6' })[r.status] || '#64748b';
+    const eb = r.env === 'TEST' ? 'background:#f59e0b22;color:#f59e0b;' : 'background:#10b98122;color:#10b981;';
+    const errs = (r.errors || []).length;
+    return '<tr style="border-bottom:1px solid #1e293b;font-size:11px;">' +
+      '<td style="padding:6px 8px;font-family:monospace;font-size:10px;color:#94a3b8;">' + (r.run_id||'').slice(-10) + '</td>' +
+      '<td style="padding:6px 8px;">' + new Date(r.started_at).toLocaleString() + '</td>' +
+      '<td style="padding:6px 8px;"><span style="padding:2px 6px;border-radius:4px;' + eb + 'font-size:10px;">' + r.env + '</span></td>' +
+      '<td style="padding:6px 8px;color:#a78bfa;">' + r.triggered_by + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:#10b981;">' + (r.emails_sent||0) + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:#3b82f6;">' + (r.sms_sent||0) + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:#f59e0b;">' + (r.calls_logged||0) + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:' + sc + ';"' + '>' + r.status + '</td>' +
+      '<td style="padding:6px 8px;color:' + (errs>0?'#ef4444':'#475569') + ';">' + errs + '</td>' +
+    '</tr>';
+  }).join('');
+
+  const callQueueItems = (callQueue && callQueue.queue) || [];
+  const callQueueRows = callQueueItems.slice(0,8).map(function(q) {
+    return '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #1e293b;font-size:12px;">' +
+      '<div style="flex:1;">' +
+        '<div style="color:#f1f5f9;font-weight:600;">' + q.business_name + '</div>' +
+        '<div style="color:#94a3b8;font-size:11px;">' + q.phone + ' · ' + q.industry + '</div>' +
+      '</div>' +
+      '<span style="font-size:10px;color:#f59e0b;background:#f59e0b11;padding:2px 7px;border-radius:4px;">NO EMAIL</span>' +
+      '<button onclick="logCall(\''+ q.lead_id +'\',\''+ q.business_name +'\')" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:3px 10px;border-radius:5px;font-size:11px;cursor:pointer;">Log Call</button>' +
+    '</div>';
+  }).join('') || '<div style="color:#475569;font-size:12px;padding:12px 0;text-align:center;">No leads queued for calls</div>';
+
+  const pauseBg   = paused ? '#f9731611' : '#10b98111';
+  const pauseBdr  = paused ? '#f9731633' : '#10b98133';
+  const pauseIcon = paused ? '🟠' : '🟢';
+  const pauseLbl  = paused ? 'PAUSED' : 'ACTIVE';
+  const envColor  = env==='TEST' ? '#f59e0b' : '#10b981';
+  const ver       = status.version || '2.0.0';
+  const qCount    = (callQueue && callQueue.total_queued) || 0;
+  const emailUsed = (ch.email && ch.email.used_today) || 0;
+  const emailCap  = (ch.email && ch.email.cap_daily)  || 5;
+  const smsUsed   = (ch.sms   && ch.sms.used_today)   || 0;
+  const smsCap    = (ch.sms   && ch.sms.cap_daily)    || 5;
+  const smsCfg    = (ch.sms   && ch.sms.configured)   ? 'Twilio ✓' : 'Twilio not set';
+  const callUsed  = (ch.calls && ch.calls.used_today)  || 0;
+  const callCap   = (ch.calls && ch.calls.cap_daily)   || 10;
+  const leadUsed  = (ch.leads && ch.leads.used_today)  || 0;
+  const leadCap   = (ch.leads && ch.leads.cap_daily)   || 20;
+  const wEmail    = (health && health.email_channel && health.email_channel.leads_with_email) || 0;
+
+  const pauseBtn  = paused
+    ? '<button onclick="engineResume()" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;font-size:12px;padding:7px 12px;">▶ Resume</button>'
+    : '<button onclick="enginePause()"  class="btn" style="background:#ef444422;color:#ef4444;border:1px solid #ef444433;font-size:12px;padding:7px 12px;">⏸ Pause</button>';
+
+  const metricKV = [
+    ['Leads','👥',10,'#94a3b8'],
+    ['w/ Email','📧',wEmail,'#60a5fa'],
+    ['Sent','✉️',campaignM.total_sent||0,'#10b981'],
+    ['Replied','💬',campaignM.total_replied||0,'#a78bfa'],
+    ['Rate','📈',(campaignM.reply_rate_pct||0)+'%','#f59e0b'],
+    ['Interested','🤝',campaignM.interested||0,'#34d399'],
+    ['Closed','🏆',campaignM.closed||0,'#4ade80'],
+  ].map(function(m) {
+    return '<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px;text-align:center;">' +
+      '<div style="font-size:17px;font-weight:800;color:' + m[3] + ';">' + m[2] + '</div>' +
+      '<div style="font-size:10px;color:#64748b;margin-top:2px;">' + m[1] + ' ' + m[0] + '</div>' +
+    '</div>';
+  }).join('');
+
+  const safetyGates = (status.safety_gates || []).map(function(g) {
+    return '<span style="background:#a855f711;color:#a855f7;border:1px solid #a855f733;padding:2px 9px;border-radius:9999px;font-size:11px;">' + g + '</span>';
+  }).join('');
+
+  const lastRunHtml = lastRun
+    ? '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:16px;">' +
+        '<div style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:8px;">Last Run — ' + lastRun.run_id + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;font-size:12px;">' +
+          '<div><div style="color:#64748b;font-size:10px;">Started</div><div style="color:#f1f5f9;">' + new Date(lastRun.started_at).toLocaleString() + '</div></div>' +
+          '<div><div style="color:#64748b;font-size:10px;">Trigger</div><div style="color:#a78bfa;">' + lastRun.triggered_by + '</div></div>' +
+          '<div><div style="color:#64748b;font-size:10px;">Emails</div><div style="color:#10b981;font-weight:700;">' + lastRun.emails_sent + '</div></div>' +
+          '<div><div style="color:#64748b;font-size:10px;">SMS</div><div style="color:#3b82f6;font-weight:700;">' + lastRun.sms_sent + '</div></div>' +
+          '<div><div style="color:#64748b;font-size:10px;">Status</div><div style="font-weight:700;color:' + ({ COMPLETED:'#10b981', HARD_STOP:'#ef4444', ERROR:'#f59e0b' }[lastRun.status]||'#94a3b8') + ';'+ '">'+ lastRun.status + '</div></div>' +
+        '</div>' +
+        (lastRun.environment_breach ? '<div style="margin-top:8px;background:#ef444411;border:1px solid #ef444433;border-radius:6px;padding:7px 12px;font-size:11px;color:#ef4444;">⚠️ ENVIRONMENT_BREACH — ' + lastRun.hard_stop_reason + '</div>' : '') +
+      '</div>'
+    : '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;text-align:center;color:#475569;font-size:12px;margin-bottom:16px;">No runs yet — click ▶ Run Now</div>';
+
+  const logTable = runs.length === 0
+    ? '<div style="color:#475569;text-align:center;padding:16px;font-size:12px;">No runs yet.</div>'
+    : '<table style="width:100%;border-collapse:collapse;min-width:680px;">' +
+        '<thead><tr style="color:#475569;font-size:10px;text-transform:uppercase;border-bottom:1px solid #334155;">' +
+          '<th style="padding:5px 8px;text-align:left;">ID</th>' +
+          '<th style="padding:5px 8px;text-align:left;">Started</th>' +
+          '<th style="padding:5px 8px;text-align:left;">Env</th>' +
+          '<th style="padding:5px 8px;text-align:left;">By</th>' +
+          '<th style="padding:5px 8px;text-align:left;">📧</th>' +
+          '<th style="padding:5px 8px;text-align:left;">💬</th>' +
+          '<th style="padding:5px 8px;text-align:left;">📞</th>' +
+          '<th style="padding:5px 8px;text-align:left;">Status</th>' +
+          '<th style="padding:5px 8px;text-align:left;">Err</th>' +
+        '</tr></thead>' +
+        '<tbody>' + logRows + '</tbody>' +
+      '</table>';
+
+  content.innerHTML =
+    '<div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap;">' +
+      '<div style="flex:1;">' +
+        '<h2 style="color:#f1f5f9;font-size:20px;font-weight:800;margin:0;">🤖 Autonomous Outreach Engine</h2>' +
+        '<p style="color:#64748b;font-size:12px;margin:3px 0 0;">Daily 09:00 CST · Email → SMS → Phone Fallback · CRON Mon–Fri</p>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+        '<button onclick="engineRunDryRun()" class="btn" style="background:#334155;color:#94a3b8;font-size:12px;padding:7px 12px;">🔍 Dry Run</button>' +
+        '<button onclick="engineRunNow()" class="btn btn-success" style="font-size:12px;padding:7px 14px;">▶ Run Now</button>' +
+        pauseBtn +
+        '<button onclick="renderEngine()" class="btn" style="background:#33415544;color:#94a3b8;font-size:12px;padding:7px 10px;">🔄</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div style="background:' + pauseBg + ';border:1px solid ' + pauseBdr + ';border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">' +
+      '<span style="font-size:20px;">' + pauseIcon + '</span>' +
+      '<div style="flex:1;">' +
+        '<div style="font-weight:700;color:#f1f5f9;font-size:13px;">Engine ' + pauseLbl + ' · Env: <span style="color:' + envColor + ';'+ '">'+ env + '</span> · v' + ver + '</div>' +
+        '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">Cron: 0 14 * * 1-5 · 09:00 CST Mon–Fri · Configure in Cloudflare Pages → Functions → Cron Triggers</div>' +
+      '</div>' +
+      '<div style="text-align:right;font-size:12px;">' +
+        '<div style="font-weight:700;color:' + hColor + ';">' + ((health && health.health)||'—') + '</div>' +
+        '<div style="font-weight:700;color:' + gateColor + ';'+ '">'+ gateIcon + ' ' + (gate.action||'—') + '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:16px;">' +
+      chBar('Email','📧',emailUsed,emailCap,'#10b981','') +
+      chBar('SMS','💬',smsUsed,smsCap,'#3b82f6',smsCfg) +
+      chBar('Calls','📞',callUsed,callCap,'#f59e0b','human-initiated') +
+      chBar('Leads','👥',leadUsed,leadCap,'#a855f7','') +
+    '</div>' +
+
+    '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:16px;">' + metricKV + '</div>' +
+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">' +
+      '<div style="background:#1e293b;border:1px solid #f59e0b33;border-radius:10px;padding:14px;">' +
+        '<div style="font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:10px;">📞 Phone Fallback — No-Email Leads</div>' +
+        '<div style="font-size:11px;color:#94a3b8;line-height:1.7;">When a lead has <strong style="color:#f1f5f9;">no email</strong>, the engine auto-routes:<br><span style="color:#3b82f6;">① SMS</span> — text via Twilio if configured<br><span style="color:#f59e0b;">② Call Queue</span> — added for human outreach</div>' +
+        '<div style="margin-top:10px;background:#f59e0b11;border-radius:6px;padding:8px 10px;font-size:11px;color:#94a3b8;">Enable live SMS: add <code style="color:#a78bfa;">TWILIO_SID</code> <code style="color:#a78bfa;">TWILIO_TOKEN</code> <code style="color:#a78bfa;">TWILIO_FROM</code> as Cloudflare secrets</div>' +
+        '<div style="display:flex;gap:8px;margin-top:10px;">' +
+          '<button onclick="engineRunChannel(\'sms\')" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:5px 11px;border-radius:6px;font-size:11px;cursor:pointer;">💬 SMS+Fallback</button>' +
+          '<button onclick="engineRunChannel(\'calls\')" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;padding:5px 11px;border-radius:6px;font-size:11px;cursor:pointer;">📞 View Queue</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">' +
+          '<span style="font-size:12px;font-weight:700;color:#f59e0b;">📞 Call Queue</span>' +
+          '<span style="background:#f59e0b22;color:#f59e0b;padding:1px 8px;border-radius:9999px;font-size:11px;">' + qCount + '</span>' +
+          '<button onclick="clearCallQueue()" style="margin-left:auto;background:none;color:#475569;border:1px solid #334155;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;">Clear</button>' +
+        '</div>' +
+        callQueueRows +
+      '</div>' +
+    '</div>' +
+
+    lastRunHtml +
+
+    '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:16px;">' +
+      '<div style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">🎛️ Channel Controls</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+        '<button onclick="engineRunChannel(\'email\')" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;padding:6px 13px;border-radius:6px;font-size:12px;cursor:pointer;">📧 Email Only</button>' +
+        '<button onclick="engineRunChannel(\'sms\')"   style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:6px 13px;border-radius:6px;font-size:12px;cursor:pointer;">💬 SMS+Fallback</button>' +
+        '<button onclick="engineRunChannel(\'calls\')" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;padding:6px 13px;border-radius:6px;font-size:12px;cursor:pointer;">📞 Calls</button>' +
+        '<button onclick="engineResetDay()" style="background:#33415522;color:#94a3b8;border:1px solid #33415544;padding:6px 13px;border-radius:6px;font-size:12px;cursor:pointer;">🔄 Reset Counters</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;overflow-x:auto;margin-bottom:16px;">' +
+      '<div style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">📋 Run History (' + runs.length + ')</div>' +
+      logTable +
+    '</div>' +
+
+    '<div style="background:#1e293b;border:1px solid #a855f722;border-radius:10px;padding:12px 16px;">' +
+      '<div style="font-size:11px;font-weight:700;color:#a855f7;text-transform:uppercase;margin-bottom:8px;">🛡️ Safety Gates</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + safetyGates + '</div>' +
+    '</div>';
+}
+
+async function engineRunNow() {
+  if (!confirm('Run the full engine now? Real emails will be sent if RESEND_API_KEY is configured and leads have email addresses.')) return;
+  showToast('Running full daily cycle...', 'info');
+  const r = await api('POST', '/engine/run', { dry_run: false });
+  if (r) {
+    const breach = r.environment_breach ? ' ⚠️ BREACH!' : '';
+    showToast('Done: '+(r.emails_sent||0)+' emails · '+(r.sms_sent||0)+' SMS · '+r.status+breach, r.status==='HARD_STOP'?'error':'success');
+    await renderEngine();
+  }
+}
+
+async function engineRunDryRun() {
+  showToast('Running dry run (no real sends)...', 'info');
+  const r = await api('POST', '/engine/run', { dry_run: true });
+  if (r) {
+    showToast('Dry run: '+(r.emails_sent||0)+' emails · '+(r.sms_sent||0)+' SMS · '+r.status, 'warning');
+    await renderEngine();
+  }
+}
+
+async function engineRunChannel(channel) {
+  const dryRun = !confirm('Run '+channel.toUpperCase()+' channel with real sends? Cancel = dry run.');
+  showToast('Running '+channel+(dryRun?' (dry run)':'')+'...', 'info');
+  const r = await api('POST', '/engine/run-channel', { channel: channel, dry_run: dryRun });
+  if (r) {
+    showToast(channel+' done: '+(r.emails_sent||0)+' emails · '+(r.sms_sent||0)+' SMS · '+r.status, 'success');
+    await renderEngine();
+  }
+}
+
+async function enginePause() {
+  const r = await api('POST', '/engine/pause', {});
+  if (r) { showToast('Engine paused — cron will skip until resumed', 'warning'); await renderEngine(); }
+}
+
+async function engineResume() {
+  const r = await api('POST', '/engine/resume', {});
+  if (r) { showToast('Engine resumed — next cron fires automatically', 'success'); await renderEngine(); }
+}
+
+async function engineResetDay() {
+  if (!confirm("Reset today's daily counters? This lets you re-run channels today.")) return;
+  const r = await api('POST', '/engine/reset-day', {});
+  if (r) { showToast('Daily counters reset', 'info'); await renderEngine(); }
+}
+
+async function logCall(leadId, businessName) {
+  const disp = prompt('Log call for '+businessName+'\nDisposition: ANSWERED / VOICEMAIL / NO_ANSWER / INTERESTED / NOT_INTERESTED / CALLBACK_REQUESTED / WRONG_NUMBER');
+  if (!disp) return;
+  const notes = prompt('Notes (optional):') || '';
+  const r = await api('POST', '/engine/calls/log', { lead_id: leadId, disposition: disp.trim().toUpperCase(), notes: notes });
+  if (r && r.logged) { showToast('Call logged: '+disp, 'success'); await renderEngine(); }
+}
+
+async function clearCallQueue() {
+  if (!confirm('Clear the entire call queue?')) return;
+  await api('POST', '/engine/calls/queue/clear', {});
+  showToast('Call queue cleared', 'info');
+  await renderEngine();
+}
+
+// ============= SYSTEM ORCHESTRATOR PAGE =============
+async function renderSystem() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:#475569;"><div style="font-size:24px;">⚡</div><p>Loading system status...</p></div>';
+  const [status, log, callQueue] = await Promise.all([
+    api('GET', '/system/status'),
+    api('GET', '/system/log?limit=15'),
+    api('GET', '/system/call-queue'),
+  ]);
+  if (!status) { showPageError('Could not load system status'); return; }
+
+  const envColor = status.env === 'PRODUCTION' ? '#10b981' : '#f59e0b';
+  const envBg    = status.env === 'PRODUCTION' ? '#10b98122' : '#f59e0b22';
+
+  const runs = (log?.runs || []);
+  const queue = (callQueue?.queue || []);
+
+  const runRows = runs.map(r => {
+    const ec = r.env === 'PRODUCTION' ? '#10b981' : '#f59e0b';
+    const sc = r.state === 'PROCEED' ? '#10b981' : r.state === 'THROTTLE' ? '#f59e0b' : r.state === 'STOP_ALL' ? '#ef4444' : '#94a3b8';
+    return `<tr style="border-bottom:1px solid #1e293b;">
+      <td style="padding:8px;font-family:monospace;font-size:11px;color:#64748b;">${r.run_id}</td>
+      <td style="padding:8px;font-size:12px;color:#94a3b8;">${r.date} ${r.finished_at?.slice(11,16)||''}</td>
+      <td style="padding:8px;"><span style="background:${ec}22;color:${ec};padding:2px 7px;border-radius:9999px;font-size:11px;">${r.env}</span></td>
+      <td style="padding:8px;color:#f1f5f9;font-size:13px;">${r.emails_sent}</td>
+      <td style="padding:8px;color:#f1f5f9;font-size:13px;">${r.calls_made}</td>
+      <td style="padding:8px;color:#f1f5f9;font-size:13px;">${r.sms_sent}</td>
+      <td style="padding:8px;"><span style="background:${sc}22;color:${sc};padding:2px 7px;border-radius:9999px;font-size:11px;">${r.state}</span></td>
+      <td style="padding:8px;color:${r.errors?.length>0?'#ef4444':'#10b981'};font-size:12px;">${r.errors?.length||0}</td>
+    </tr>`;
+  }).join('');
+
+  const queueRows = queue.slice(0,10).map(e => {
+    const sc = e.status === 'QUEUED' ? '#22d3ee' : e.status === 'ANSWERED' ? '#10b981' : e.status === 'REJECTED' || e.status === 'LOST' ? '#ef4444' : '#94a3b8';
+    return `<tr style="border-bottom:1px solid #1e293b;">
+      <td style="padding:8px;color:#f1f5f9;font-size:13px;">${e.business_name}</td>
+      <td style="padding:8px;font-family:monospace;font-size:12px;color:#94a3b8;">${e.phone}</td>
+      <td style="padding:8px;"><span style="background:${sc}22;color:${sc};padding:2px 7px;border-radius:9999px;font-size:11px;">${e.status}</span></td>
+      <td style="padding:8px;color:#64748b;font-size:12px;">${e.call_attempts} / 3</td>
+      <td style="padding:8px;">
+        <select id="disp-${e.lead_id}" style="background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:3px;font-size:11px;">
+          <option value="">Outcome</option>
+          <option value="INTERESTED">✅ Interested</option>
+          <option value="VOICEMAIL">📬 Voicemail</option>
+          <option value="NO_ANSWER">📵 No Answer</option>
+          <option value="REJECTED">🚫 Rejected</option>
+        </select>
+        <button onclick="logCallOutcome('${e.lead_id}')" style="background:#22d3ee22;color:#22d3ee;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:4px;">Log</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" style="padding:20px;text-align:center;color:#475569;">No calls queued</td></tr>';
+
+  const c = status.counters || {};
+  const lim = status.limits || {};
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="font-size:28px;">⚡</div>
+      <div>
+        <h2 style="margin:0;color:#f1f5f9;font-size:20px;">System Orchestrator</h2>
+        <p style="margin:4px 0 0;color:#64748b;font-size:13px;">Unified pipeline — ${status.cron_schedule} UTC daily &nbsp;|&nbsp; v${status.version||'1.0.0'}</p>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
+        <span style="background:${envBg};color:${envColor};padding:4px 12px;border-radius:9999px;font-size:12px;font-weight:700;">${status.env}</span>
+        ${status.paused ? '<span style="background:#ef444422;color:#ef4444;padding:4px 12px;border-radius:9999px;font-size:12px;">PAUSED</span>' : '<span style="background:#10b98122;color:#10b981;padding:4px 12px;border-radius:9999px;font-size:12px;">ACTIVE</span>'}
+      </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap;">
+      <button onclick="systemRunNow()" style="background:#22d3ee;color:#0f172a;border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">▶ Run Now</button>
+      <button onclick="systemRunDryRun()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;padding:10px 18px;border-radius:8px;cursor:pointer;font-size:13px;">🧪 Dry Run</button>
+      <button onclick="systemRunForce()" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;padding:10px 18px;border-radius:8px;cursor:pointer;font-size:13px;">⚡ Force Run</button>
+      <button onclick="renderSystem()" style="background:#1e293b;color:#64748b;border:1px solid #334155;padding:10px 14px;border-radius:8px;cursor:pointer;font-size:13px;">🔄</button>
+    </div>
+
+    <!-- Counters -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px;">
+      ${[['📧 Emails', c.emails_sent||0, lim.emails, '#22d3ee'],['📞 Calls Queued', c.calls_made||0, lim.calls, '#f97316'],['💬 SMS', c.sms_sent||0, lim.sms, '#a78bfa'],['👥 Leads', c.leads_processed||0, lim.leads, '#10b981']].map(([label,val,cap,color])=>`
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;">
+          <div style="color:#64748b;font-size:11px;margin-bottom:6px;">${label}</div>
+          <div style="font-size:22px;font-weight:700;color:${color};">${val}</div>
+          <div style="font-size:10px;color:#475569;">cap: ${cap}/day</div>
+          <div style="background:#0f172a;border-radius:4px;height:4px;margin-top:8px;">
+            <div style="background:${color};height:4px;border-radius:4px;width:${cap>0?Math.min(100,(val/cap)*100):0}%;"></div>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <!-- Last Run -->
+    ${status.last_run ? `
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:24px;">
+      <h3 style="margin:0 0 12px;color:#f1f5f9;font-size:14px;">Last Run</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;font-size:13px;">
+        <div><span style="color:#64748b;">Run ID:</span> <span style="color:#94a3b8;font-family:monospace;font-size:11px;">${status.last_run.run_id}</span></div>
+        <div><span style="color:#64748b;">Date:</span> <span style="color:#f1f5f9;">${status.last_run.date} ${(status.last_run.finished_at||'').slice(11,19)}</span></div>
+        <div><span style="color:#64748b;">Triggered by:</span> <span style="color:#f1f5f9;">${status.last_run.triggered_by}</span></div>
+        <div><span style="color:#64748b;">State:</span> <span style="color:#10b981;">${status.last_run.state}</span></div>
+        <div><span style="color:#64748b;">Emails:</span> <span style="color:#22d3ee;">${status.last_run.emails_sent}</span></div>
+        <div><span style="color:#64748b;">Calls:</span> <span style="color:#f97316;">${status.last_run.calls_made}</span></div>
+        <div><span style="color:#64748b;">SMS:</span> <span style="color:#a78bfa;">${status.last_run.sms_sent}</span></div>
+        <div><span style="color:#64748b;">Leads:</span> <span style="color:#10b981;">${status.last_run.leads_processed}</span></div>
+        <div><span style="color:#64748b;">Conversations:</span> <span style="color:#10b981;">${status.last_run.conversations_started}</span></div>
+        <div><span style="color:#64748b;">Errors:</span> <span style="color:${status.last_run.errors?.length>0?'#ef4444':'#10b981'}">${status.last_run.errors?.length||0}</span></div>
+      </div>
+    </div>` : ''}
+
+    <!-- Call Queue -->
+    <div style="background:#1e293b;border:1px solid #22d3ee44;border-radius:10px;padding:16px;margin-bottom:24px;">
+      <h3 style="margin:0 0 12px;color:#22d3ee;font-size:14px;">📞 Phone-First Call Queue <span style="font-size:11px;color:#64748b;font-weight:normal;">— No-email leads routed here</span></h3>
+      <div style="background:#0f172a;border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:#64748b;line-height:1.6;">
+        <strong style="color:#f1f5f9;">Call Script:</strong><br>
+        "Hey, is this the owner of [Business Name]?<br>
+        I'll be quick — I actually put together something for your business and wanted your quick opinion.<br>
+        Would it be okay if I texted it over to you?"
+      </div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid #334155;">
+            <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Business</th>
+            <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Phone</th>
+            <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Status</th>
+            <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Attempts</th>
+            <th style="padding:8px;text-align:left;color:#64748b;font-weight:600;">Log Outcome</th>
+          </tr></thead>
+          <tbody>${queueRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Run Log -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:24px;">
+      <h3 style="margin:0 0 12px;color:#f1f5f9;font-size:14px;">📋 Daily Run Log</h3>
+      ${runs.length > 0 ? `
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid #334155;">
+            <th style="padding:8px;text-align:left;color:#64748b;">Run ID</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">Date/Time</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">Env</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">Email</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">Calls</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">SMS</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">State</th>
+            <th style="padding:8px;text-align:left;color:#64748b;">Errors</th>
+          </tr></thead>
+          <tbody>${runRows}</tbody>
+        </table>
+      </div>` : '<p style="color:#475569;font-size:13px;">No runs yet. Click Run Now or wait for the 10AM cron.</p>'}
+    </div>
+
+    <!-- Pipeline Steps Reference -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;">
+      <h3 style="margin:0 0 12px;color:#f1f5f9;font-size:14px;">🔄 Pipeline Steps</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;font-size:12px;">
+        ${[
+          ['1','Check ENV == PRODUCTION','#10b981'],
+          ['2','Warmup safety gate (STOP_ALL/HOLD blocks)','#10b981'],
+          ['3','Load + integrity-gate leads (≤20)','#10b981'],
+          ['4','Validate demo URLs (/demo/{slug})','#10b981'],
+          ['5a','Email leads → send Day1/2/3 sequence','#22d3ee'],
+          ['5b','Phone leads → queue call + send SMS','#f97316'],
+          ['6','Log run, update counters, save tracking','#a78bfa'],
+        ].map(([n,desc,color])=>`
+          <div style="background:#0f172a;border-radius:8px;padding:10px;display:flex;gap:10px;align-items:flex-start;">
+            <span style="background:${color}22;color:${color};padding:2px 8px;border-radius:9999px;font-weight:700;font-size:11px;flex-shrink:0;">§${n}</span>
+            <span style="color:#94a3b8;">${desc}</span>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+async function systemRunNow() {
+  if (!confirm('Run full daily pipeline NOW? (live sends if API keys set)')) return;
+  const r = await api('POST', '/system/run-daily');
+  if (r) {
+    showToast(`Pipeline complete — emails:${r.emails_sent} calls:${r.calls_made} sms:${r.sms_sent}`, r.status?.includes('BREACH') ? 'error' : 'success');
+    await renderSystem();
+  }
+}
+
+async function systemRunDryRun() {
+  const r = await api('POST', '/system/run-daily?dry_run=true');
+  if (r) {
+    showToast(`DRY RUN — would route ${r.routing_summary?.email_leads||0} email, ${r.routing_summary?.phone_first_leads||0} phone leads`, 'info');
+    await renderSystem();
+  }
+}
+
+async function systemRunForce() {
+  if (!confirm('FORCE run — bypasses ENV check and paused state. Continue?')) return;
+  const r = await api('POST', '/system/run-daily?force=true');
+  if (r) {
+    showToast(`Force run — status:${r.status}`, 'warning');
+    await renderSystem();
+  }
+}
+
+async function logCallOutcome(leadId) {
+  const sel = document.getElementById('disp-' + leadId);
+  const disposition = sel?.value;
+  if (!disposition) { showToast('Select an outcome first', 'warning'); return; }
+  const r = await api('POST', '/system/call-outcome', { lead_id: leadId, disposition });
+  if (r) {
+    showToast(`${disposition} logged${r.sms_sent ? ' — SMS sent!' : ''}`, 'success');
+    await renderSystem();
+  }
+}
+
+// Mobile menu
+if (window.innerWidth < 768) {
+  document.getElementById('menu-btn').style.display = 'block';
+}
+
+init();
