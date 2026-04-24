@@ -11,11 +11,9 @@
       "database_id": "98615fbb-0b49-4f24-a835-91e4ef7f8ee9"
     }
   ],
-  // Cloudflare Cron Trigger: fires daily at 14:00 UTC (9:00 AM CST / Memphis local time)
-  // This calls the scheduled() handler in the Worker entry point.
-  // On Cloudflare Pages, cron triggers are configured via the dashboard
-  // (Settings → Functions → Cron Triggers) using the same cron expression below.
-  "triggers": {
-    "crons": ["0 14 * * *"]
-  }
+  // Cloudflare Cron Trigger NOTE (Pages):
+  // Cron triggers for Cloudflare Pages are configured via the Cloudflare Dashboard:
+  //   Pages → leadgen-pro → Settings → Functions → Cron Triggers
+  //   Add cron expression: "0 14 * * *"  (daily 14:00 UTC = 9:00 AM CST)
+  // The scheduled() export in src/index.tsx handles the trigger automatically.
 }
