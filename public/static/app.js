@@ -557,11 +557,31 @@ async function renderAnalytics() {
 
 // ============= SETTINGS =============
 async function renderSettings() {
-  const data = await api('GET', '/settings');
-  const s = data?.settings || {};
+  const [settingsData, infraData] = await Promise.all([
+    api('GET', '/settings'),
+    api('GET', '/settings/infrastructure')
+  ]);
+  const s = settingsData?.settings || {};
+  const infra = infraData?.checks || {};
+
+  function infraRow(label, key, note) {
+    const ok = infra[key] && infra[key].present;
+    const val = (infra[key] && infra[key].value) || 'Not configured';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #334155;">' +
+      '<div><div style="font-size:13px;color:#f1f5f9;">' + label + '</div>' + (note ? '<div style="font-size:11px;color:#64748b;">' + note + '</div>' : '') + '</div>' +
+      '<div style="text-align:right;">' +
+      '<span style="font-size:11px;font-weight:700;color:' + (ok ? '#4ade80' : '#ef4444') + ';">' + (ok ? '✅ Configured' : '❌ Missing') + '</span>' +
+      '<div style="font-size:10px;color:#475569;">' + val + '</div></div></div>';
+  }
+
+  const blockerHtml = (infraData && !infraData.production_ready && infraData.blocking_issues && infraData.blocking_issues.length > 0)
+    ? '<div style="background:#1e293b;border:1px solid #ef4444;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#f87171;">⚠️ System not production-ready: ' + infraData.blocking_issues.join(' · ') + '</div>'
+    : '';
 
   document.getElementById('page-content').innerHTML = `
     <div style="max-width:720px;">
+      ${blockerHtml}
+
       <div class="card" style="margin-bottom:20px;">
         <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🎯 Campaign Settings</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -590,23 +610,17 @@ async function renderSettings() {
       </div>
 
       <div class="card" style="margin-bottom:20px;">
-        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🔑 API Configuration</h3>
-        <div style="display:grid;gap:12px;">
-          <div>
-            <label style="font-size:12px;color:#94a3b8;">Stripe Publishable Key</label>
-            <input class="input" value="pk_live_****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
-            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
-          </div>
-          <div>
-            <label style="font-size:12px;color:#94a3b8;">Resend API Key</label>
-            <input class="input" value="re_****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
-            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
-          </div>
-          <div>
-            <label style="font-size:12px;color:#94a3b8;">OpenAI API Key</label>
-            <input class="input" value="sk-proj-****" disabled style="width:100%;margin-top:4px;opacity:0.5;">
-            <span style="font-size:11px;color:#4ade80;">✅ Configured via environment</span>
-          </div>
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🔑 Infrastructure Status</h3>
+        <div style="font-size:12px;color:#64748b;margin-bottom:12px;">Real-time check from Cloudflare secrets. API keys are never exposed in the UI.</div>
+        ${infraRow('OpenAI API Key', 'openai_api_key', 'AI demo generation + outreach copy')}
+        ${infraRow('Resend API Key', 'resend_api_key', 'Email outreach channel')}
+        ${infraRow('Email Domain Verified', 'email_domain_verified', 'websitedemopro.org — required for email sends')}
+        ${infraRow('Twilio Account SID', 'twilio_account_sid', 'SMS + call outreach channel')}
+        ${infraRow('Twilio Auth Token', 'twilio_auth_token', 'Twilio API authentication')}
+        ${infraRow('Stripe Secret Key', 'stripe_secret_key', 'Payment link creation')}
+        ${infraRow('Stripe Webhook Secret', 'stripe_webhook_secret', 'Payment confirmation security')}
+        <div style="margin-top:12px;">
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="renderSettings()">🔄 Refresh Status</button>
         </div>
       </div>
 

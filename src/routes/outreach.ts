@@ -373,7 +373,17 @@ outreach.get('/stats', async (c) => {
     ORDER BY date DESC
   `).all();
 
-  return c.json({ today, weekly: weekly.results });
+  // Normalize null values from empty table aggregates
+  const todayNormalized = today ? {
+    emails: (today as Record<string, unknown>).emails as number ?? 0,
+    sms: (today as Record<string, unknown>).sms as number ?? 0,
+    calls: (today as Record<string, unknown>).calls as number ?? 0,
+    opened: (today as Record<string, unknown>).opened as number ?? 0,
+    clicked: (today as Record<string, unknown>).clicked as number ?? 0,
+    replied: (today as Record<string, unknown>).replied as number ?? 0,
+  } : { emails: 0, sms: 0, calls: 0, opened: 0, clicked: 0, replied: 0 };
+
+  return c.json({ today: todayNormalized, weekly: weekly.results });
 });
 
 // PATCH /api/outreach/:id/status - Update outreach status (webhooks)

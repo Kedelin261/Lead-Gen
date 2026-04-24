@@ -24,7 +24,14 @@ payments.get('/', async (c) => {
     FROM payments
   `).first();
 
-  return c.json({ payments: result.results, stats });
+  const statsNormalized = stats ? {
+    total_revenue: (stats as Record<string, unknown>).total_revenue as number ?? 0,
+    today_revenue: (stats as Record<string, unknown>).today_revenue as number ?? 0,
+    total_paid: (stats as Record<string, unknown>).total_paid as number ?? 0,
+    total_pending: (stats as Record<string, unknown>).total_pending as number ?? 0,
+  } : { total_revenue: 0, today_revenue: 0, total_paid: 0, total_pending: 0 };
+
+  return c.json({ payments: result.results, stats: statsNormalized });
 });
 
 // POST /api/payments/create-link - Create Stripe payment link
