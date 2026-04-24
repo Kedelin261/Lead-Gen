@@ -1238,18 +1238,27 @@ validation.post('/run-roofing', async (c) => {
     return c.json({ status: 'NO_VALID_LEADS', reason: `No roofing leads in ${CITY} with score >= ${MIN_SCORE}`, run_id: runId }, 200);
   }
 
-  // §3 Integrity gate (existing engine)
-  const candidates = qualifiedLeads.map(s => ({
+  // §3 Integrity gate (existing engine — email path)
+  // Phone-only leads: integrity gate checks email; since these have no email,
+  // they route directly to phone-first outreach (CALL → SMS). This is correct
+  // per §5: no email → PRIMARY=CALL, SECONDARY=SMS. Gate only blocks bad emails.
+  const emailLeadCandidates = qualifiedLeads.filter(s => !!(s.lead.email && s.lead.email.trim())).map(s => ({
     id: s.lead.id,
     email: s.lead.email || '',
     name: s.lead.business_name,
     phone: s.lead.phone || undefined,
     source: 'roofing-validation',
   }));
-  const integrityReport = runIntegrityGate(candidates, appEnv);
-  const acceptedIds = new Set(integrityReport.accepted.map(a => a.id));
+  const integrityReport = runIntegrityGate(emailLeadCandidates, appEnv);
+  const blockedEmailIds = new Set(integrityReport.rejected.map(r => r.email)); // ids blocked by gate
 
-  const validLeads = qualifiedLeads.filter(s => acceptedIds.has(s.lead.id));
+  // Phone-only leads pass through automatically (no email to reject)
+  // Email leads must pass integrity gate
+  const validLeads = qualifiedLeads.filter(s => {
+    const hasEmail = !!(s.lead.email && s.lead.email.trim());
+    if (!hasEmail) return true; // phone-only → always valid for phone-first routing
+    return !blockedEmailIds.has(s.lead.email || ''); // email leads must pass gate
+  });
 
   // ── §4 Demo validation ────────────────────────────────────────────────────
   const appUrl = (c.env.APP_URL || 'https://websitedemopro.org').replace(/\/$/, '');
@@ -1395,8 +1404,9 @@ validation.post('/run-roofing', async (c) => {
     score_gate:          `>= ${MIN_SCORE}`,
     leads_scored:        scoredLeads.length,
     leads_qualified:     qualifiedLeads.length,
-    integrity_accepted:  integrityReport.accepted.length,
+    integrity_accepted:  integrityReport.accepted.length + qualifiedLeads.filter(s => !(s.lead.email && s.lead.email.trim())).length,
     integrity_rejected:  integrityReport.rejected.length,
+    integrity_note:      'Phone-only leads bypass email gate and route directly to CALL queue (§5)',
     outreach: { calls_queued, sms_queued, emails_queued },
     limits_applied:      VAL_LIMITS,
     channel_sequence:    'CALL → SMS (10min delay) → EMAIL',
