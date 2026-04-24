@@ -2188,259 +2188,269 @@ async function clearBreachLog() {
 // ============= AUTONOMOUS ENGINE PAGE =============
 async function renderEngine() {
   const content = document.getElementById('page-content');
-  content.innerHTML = \`<div style="text-align:center;padding:40px;color:#475569;"><div class="spinner" style="font-size:24px;">🤖</div><div style="margin-top:12px;">Loading engine status...</div></div>\`;
+  content.innerHTML = \`<div style="text-align:center;padding:40px;color:#475569;"><div class="spinner" style="font-size:24px;">🤖</div><div style="margin-top:12px;">Loading engine...</div></div>\`;
 
-  const [status, schedule, log, queues] = await Promise.all([
+  const [status, health, log, callQueue] = await Promise.all([
     api('GET', '/engine/status'),
-    api('GET', '/engine/schedule'),
-    api('GET', '/engine/log'),
-    api('GET', '/engine/queues'),
+    api('GET', '/engine/health'),
+    api('GET', '/engine/log?limit=10'),
+    api('GET', '/engine/calls/queue'),
   ]);
 
   if (!status) return;
 
-  const isActive = status.engine_status === 'ACTIVE';
-  const gateColor = { PROCEED: '#10b981', THROTTLE: '#f59e0b', HOLD: '#f97316', STOP_ALL: '#ef4444' }[status.gate?.action] || '#64748b';
-  const gateIcon = { PROCEED: '✅', THROTTLE: '⚠️', HOLD: '⏸️', STOP_ALL: '🛑' }[status.gate?.action] || '❓';
+  const paused = status.engine_paused;
+  const env = status.current_env || 'PRODUCTION';
+  const ch = status.channels || {};
+  const lastRun = status.last_run;
+  const gate = health?.scaling_gate || {};
+  const gateColor = { PROCEED:'#10b981', THROTTLE:'#f59e0b', HOLD:'#f97316', STOP_ALL:'#ef4444' }[gate.action] || '#64748b';
+  const gateIcon  = { PROCEED:'✅', THROTTLE:'⚠️', HOLD:'⏸️', STOP_ALL:'🛑' }[gate.action] || '❓';
+  const healthColor = { HEALTHY:'#10b981', WARNING:'#f59e0b', CRITICAL:'#ef4444' }[health?.health] || '#64748b';
 
-  const channelBar = (label, icon, sent, limit, color) => {
-    const pct = Math.min(100, Math.round((sent / limit) * 100));
+  const channelBar = (label, icon, used, cap, color, note='') => {
+    const pct = cap > 0 ? Math.min(100, Math.round((used/cap)*100)) : 0;
     return \`<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-        <span style="font-size:20px;">\${icon}</span>
-        <span style="font-weight:700;color:#f1f5f9;">\${label}</span>
-        <span style="margin-left:auto;font-size:13px;color:#94a3b8;">\${sent} / \${limit}</span>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:18px;">\${icon}</span>
+        <span style="font-weight:700;color:#f1f5f9;font-size:14px;">\${label}</span>
+        <span style="margin-left:auto;font-size:13px;color:#94a3b8;">\${used} / \${cap}</span>
       </div>
       <div style="height:6px;background:#334155;border-radius:3px;overflow:hidden;">
-        <div style="height:100%;width:\${pct}%;background:\${color};border-radius:3px;transition:width 0.5s;"></div>
+        <div style="height:100%;width:\${pct}%;background:\${color};border-radius:3px;"></div>
       </div>
-      <div style="margin-top:6px;font-size:12px;color:#64748b;">\${limit - sent} remaining today</div>
+      <div style="margin-top:6px;font-size:11px;color:#64748b;">\${cap - used} remaining today\${note ? ' · ' + note : ''}</div>
     </div>\`;
   };
 
-  // Last run display
-  const lastRunHtml = status.last_run ? \`
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-top:16px;">
-      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">Last Run</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;font-size:13px;">
-        <div><div style="color:#64748b;">Run ID</div><div style="color:#f1f5f9;font-family:monospace;font-size:11px;">\${status.last_run.run_id}</div></div>
-        <div><div style="color:#64748b;">Started</div><div style="color:#f1f5f9;">\${new Date(status.last_run.started_at).toLocaleString()}</div></div>
-        <div><div style="color:#64748b;">Trigger</div><div style="color:#a78bfa;">\${status.last_run.trigger}</div></div>
-        <div><div style="color:#64748b;">Gate</div><div style="color:\${gateColor};">\${status.last_run.gate_action}</div></div>
-        <div><div style="color:#64748b;">Emails Sent</div><div style="color:#10b981;font-weight:700;">\${status.last_run.emails_sent}</div></div>
-        <div><div style="color:#64748b;">SMS Queued</div><div style="color:#3b82f6;font-weight:700;">\${status.last_run.sms_queued}</div></div>
-        <div><div style="color:#64748b;">Calls Queued</div><div style="color:#f59e0b;font-weight:700;">\${status.last_run.calls_queued}</div></div>
-        <div><div style="color:#64748b;">Errors</div><div style="color:\${status.last_run.errors > 0 ? '#ef4444' : '#10b981'};font-weight:700;">\${status.last_run.errors}</div></div>
-      </div>
-    </div>\` : \`<div style="color:#475569;font-size:13px;margin-top:12px;padding:16px;background:#1e293b;border-radius:8px;text-align:center;">No runs yet — click "Run Engine Now" to execute the first daily run.</div>\`;
-
-  // Schedule display
-  const schedHtml = schedule ? \`
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
-        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Email Plan</div>
-        <div style="font-size:24px;font-weight:800;color:#10b981;">\${schedule.channels?.email?.planned || 0}</div>
-        <div style="font-size:12px;color:#475569;">\${schedule.channels?.email?.day1_ready || 0} Day1 + \${schedule.channels?.email?.followup_ready || 0} followup</div>
-      </div>
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
-        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">SMS Plan</div>
-        <div style="font-size:24px;font-weight:800;color:#3b82f6;">\${schedule.channels?.sms?.planned || 0}</div>
-        <div style="font-size:12px;color:#475569;">\${schedule.channels?.sms?.remaining_quota || 0} quota left</div>
-      </div>
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;">
-        <div style="font-size:12px;color:#64748b;text-transform:uppercase;">Call Plan</div>
-        <div style="font-size:24px;font-weight:800;color:#f59e0b;">\${schedule.channels?.call?.planned || 0}</div>
-        <div style="font-size:12px;color:#475569;">\${schedule.channels?.call?.remaining_quota || 0} quota left</div>
-      </div>
-    </div>\` : '';
-
-  // Run log table
   const runs = log?.runs || [];
-  const logRows = runs.slice(0, 10).map(r => {
-    const gateCol = { PROCEED: '#10b981', THROTTLE: '#f59e0b', HOLD: '#f97316', STOP_ALL: '#ef4444' }[r.gate_action] || '#64748b';
-    const envBadge = r.env === 'TEST' ? 'background:#f59e0b22;color:#f59e0b;' : 'background:#10b98122;color:#10b981;';
-    return \`<tr style="border-bottom:1px solid #1e293b;">
-      <td style="padding:8px;font-family:monospace;font-size:11px;color:#94a3b8;">\${r.run_id?.slice(-12)}</td>
-      <td style="padding:8px;font-size:12px;">\${new Date(r.started_at).toLocaleString()}</td>
-      <td style="padding:8px;"><span style="padding:2px 8px;border-radius:4px;\${envBadge}font-size:11px;">\${r.env}</span></td>
-      <td style="padding:8px;font-size:12px;color:#a78bfa;">\${r.trigger}</td>
-      <td style="padding:8px;font-weight:700;color:#10b981;">\${r.totals?.emails_sent || 0}</td>
-      <td style="padding:8px;font-weight:700;color:#3b82f6;">\${r.totals?.sms_queued || 0}</td>
-      <td style="padding:8px;font-weight:700;color:#f59e0b;">\${r.totals?.calls_queued || 0}</td>
-      <td style="padding:8px;font-size:12px;color:\${gateCol};font-weight:700;">\${r.gate_action}</td>
-      <td style="padding:8px;font-size:12px;color:\${r.errors?.length > 0 ? '#ef4444' : '#10b981'};">\${r.errors?.length || 0}</td>
+  const logRows = runs.map(r => {
+    const sc = { COMPLETED:'#10b981', HARD_STOP:'#ef4444', ERROR:'#f59e0b', PAUSED:'#64748b', RUNNING:'#3b82f6' }[r.status] || '#64748b';
+    const eb = r.env === 'TEST' ? 'background:#f59e0b22;color:#f59e0b;' : 'background:#10b98122;color:#10b981;';
+    return \`<tr style="border-bottom:1px solid #1e293b;font-size:12px;">
+      <td style="padding:7px 8px;font-family:monospace;font-size:10px;color:#94a3b8;">\${(r.run_id||'').slice(-10)}</td>
+      <td style="padding:7px 8px;">\${new Date(r.started_at).toLocaleString()}</td>
+      <td style="padding:7px 8px;"><span style="padding:2px 7px;border-radius:4px;\${eb}font-size:10px;">\${r.env}</span></td>
+      <td style="padding:7px 8px;color:#a78bfa;">\${r.triggered_by}</td>
+      <td style="padding:7px 8px;font-weight:700;color:#10b981;">\${r.emails_sent||0}</td>
+      <td style="padding:7px 8px;font-weight:700;color:#3b82f6;">\${r.sms_sent||0}</td>
+      <td style="padding:7px 8px;font-weight:700;color:#f59e0b;">\${r.calls_logged||0}</td>
+      <td style="padding:7px 8px;font-weight:700;color:\${sc};">\${r.status}</td>
+      <td style="padding:7px 8px;color:\${(r.errors||[]).length>0?'#ef4444':'#475569'};">\${(r.errors||[]).length}</td>
+      <td style="padding:7px 8px;color:#64748b;">\${r.duration_ms ? r.duration_ms+'ms' : '—'}</td>
     </tr>\`;
   }).join('');
 
-  content.innerHTML = \`
-    <!-- Engine Status Header -->
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+  // No-email call queue rows
+  const callQueueRows = (callQueue?.queue || []).slice(0,8).map(q => \`
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #1e293b;font-size:12px;">
       <div style="flex:1;">
-        <h2 style="color:#f1f5f9;font-size:22px;font-weight:800;margin:0;">🤖 Autonomous Outreach Engine</h2>
-        <p style="color:#64748b;font-size:13px;margin:4px 0 0;">Runs daily at 9:00 AM CST via Cloudflare Cron · Email + SMS + Call</p>
+        <div style="color:#f1f5f9;font-weight:600;">\${q.business_name}</div>
+        <div style="color:#94a3b8;font-size:11px;">\${q.phone} · \${q.industry}</div>
+      </div>
+      <div style="font-size:10px;color:#f59e0b;background:#f59e0b11;padding:2px 7px;border-radius:4px;">📞 CALL</div>
+      <button onclick="logCall('\${q.lead_id}','\${q.business_name}')" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:3px 10px;border-radius:5px;font-size:11px;cursor:pointer;">Log</button>
+    </div>\`).join('') || '<div style="color:#475569;font-size:12px;padding:12px 0;text-align:center;">No leads queued — no-email leads will appear here when auto-detected</div>';
+
+  const campaignM = health?.campaign_metrics || {};
+
+  content.innerHTML = \`
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+      <div style="flex:1;">
+        <h2 style="color:#f1f5f9;font-size:20px;font-weight:800;margin:0;">🤖 Autonomous Outreach Engine</h2>
+        <p style="color:#64748b;font-size:12px;margin:3px 0 0;">Daily at 09:00 CST via Cloudflare Cron · Email → SMS → Call (phone fallback for no-email leads)</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button onclick="engineRunDryRun()" class="btn" style="background:#334155;color:#94a3b8;font-size:13px;padding:8px 14px;">🔍 Dry Run</button>
-        <button onclick="engineRunNow()" class="btn btn-success" style="font-size:13px;padding:8px 16px;">▶ Run Engine Now</button>
-        \${isActive
-          ? \`<button onclick="enginePause()" class="btn" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;font-size:13px;padding:8px 14px;">⏸ Pause</button>\`
-          : \`<button onclick="engineResume()" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;font-size:13px;padding:8px 14px;">▶ Resume</button>\`
-        }
+        <button onclick="engineRunDryRun()" class="btn" style="background:#334155;color:#94a3b8;font-size:12px;padding:7px 12px;">🔍 Dry Run</button>
+        <button onclick="engineRunNow()" class="btn btn-success" style="font-size:12px;padding:7px 14px;">▶ Run Now</button>
+        \${paused
+          ? \`<button onclick="engineResume()" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;font-size:12px;padding:7px 12px;">▶ Resume</button>\`
+          : \`<button onclick="enginePause()" class="btn" style="background:#ef444422;color:#ef4444;border:1px solid #ef444433;font-size:12px;padding:7px 12px;">⏸ Pause</button>\`}
+        <button onclick="renderEngine()" class="btn" style="background:#33415544;color:#94a3b8;font-size:12px;padding:7px 12px;">🔄</button>
       </div>
     </div>
 
-    <!-- Engine State Banner -->
-    <div style="background:\${isActive ? '#10b98111' : '#f9731611'};border:1px solid \${isActive ? '#10b98133' : '#f9731633'};border-radius:10px;padding:14px 18px;display:flex;align-items:center;gap:14px;margin-bottom:20px;">
-      <span style="font-size:24px;">\${isActive ? '🟢' : '🟠'}</span>
+    <!-- Status banner -->
+    <div style="background:\${paused?'#f9731611':'#10b98111'};border:1px solid \${paused?'#f9731633':'#10b98133'};border-radius:10px;padding:12px 18px;display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap;">
+      <span style="font-size:22px;">\${paused?'🟠':'🟢'}</span>
       <div style="flex:1;">
-        <div style="font-weight:700;color:#f1f5f9;">Engine \${isActive ? 'ACTIVE' : 'PAUSED'} · Environment: <span style="color:\${status.env === 'TEST' ? '#f59e0b' : '#10b981'};">\${status.env}</span></div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:2px;">Cron: <code style="color:#a78bfa;">0 14 * * *</code> (daily 14:00 UTC = 9:00 AM CST) · Cloudflare Cron Trigger</div>
+        <div style="font-weight:700;color:#f1f5f9;font-size:14px;">Engine \${paused?'PAUSED':'ACTIVE'} · Env: <span style="color:\${env==='TEST'?'#f59e0b':'#10b981'};">\${env}</span></div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:2px;">Cron: <code style="color:#a78bfa;">0 14 * * 1-5</code> (09:00 CT Mon–Fri) · v\${status.version||'2.0.0'}</div>
       </div>
       <div style="text-align:right;">
-        <div style="font-size:13px;font-weight:700;color:\${gateColor};">\${gateIcon} Gate: \${status.gate?.action}</div>
-        <div style="font-size:11px;color:#64748b;max-width:220px;">\${status.gate?.reason?.slice(0, 80)}\${status.gate?.reason?.length > 80 ? '...' : ''}</div>
+        <div style="font-size:13px;font-weight:700;color:\${healthColor};">\${health?.health||'—'}</div>
+        <div style="font-size:12px;font-weight:700;color:\${gateColor};">\${gateIcon} \${gate.action||'—'}: \${(gate.reason||'').slice(0,60)}</div>
       </div>
     </div>
 
-    <!-- Channel Progress Bars -->
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px;">
-      \${channelBar('Email', '📧', status.channels?.email?.sent_today || 0, status.channels?.email?.limit || 5, '#10b981')}
-      \${channelBar('SMS', '💬', status.channels?.sms?.sent_today || 0, status.channels?.sms?.limit || 5, '#3b82f6')}
-      \${channelBar('Calls', '📞', status.channels?.call?.made_today || 0, status.channels?.call?.limit || 10, '#f59e0b')}
+    <!-- Channel caps -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:18px;">
+      \${channelBar('Email','📧', ch.email?.used_today||0, ch.email?.cap_daily||5, '#10b981')}
+      \${channelBar('SMS','💬', ch.sms?.used_today||0, ch.sms?.cap_daily||5, '#3b82f6', ch.sms?.configured?'Twilio ready':'Twilio not set')}
+      \${channelBar('Calls','📞', ch.calls?.used_today||0, ch.calls?.cap_daily||10, '#f59e0b','human-initiated')}
+      \${channelBar('Leads','👥', ch.leads?.used_today||0, ch.leads?.cap_daily||20, '#a855f7')}
     </div>
 
-    <!-- Campaign Metrics Row -->
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:20px;">
+    <!-- Campaign metrics row -->
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:18px;">
       \${[
-        ['Leads', status.campaign_metrics?.leads_total || 0, '#94a3b8'],
-        ['w/ Email', status.campaign_metrics?.leads_with_email || 0, '#60a5fa'],
-        ['Sent', status.campaign_metrics?.emails_sent || 0, '#10b981'],
-        ['Replied', status.campaign_metrics?.replies_received || 0, '#a78bfa'],
-        ['Rate', (status.campaign_metrics?.reply_rate_pct || 0) + '%', '#f59e0b'],
-        ['Interested', status.campaign_metrics?.interested || 0, '#34d399'],
-        ['Closed', status.campaign_metrics?.deals_closed || 0, '#4ade80'],
-      ].map(([label, val, color]) => \`<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px;text-align:center;">
-        <div style="font-size:20px;font-weight:800;color:\${color};">\${val}</div>
-        <div style="font-size:11px;color:#64748b;margin-top:2px;">\${label}</div>
+        ['Leads','👥', campaignM.total_sent!==undefined ? 10 : '—', '#94a3b8'],
+        ['w/ Email','📧', health?.email_channel?.leads_with_email||0,'#60a5fa'],
+        ['Sent','✉️', campaignM.total_sent||0,'#10b981'],
+        ['Replied','💬', campaignM.total_replied||0,'#a78bfa'],
+        ['Rate','📈', (campaignM.reply_rate_pct||0)+'%','#f59e0b'],
+        ['Interested','🤝', campaignM.interested||0,'#34d399'],
+        ['Closed','🏆', campaignM.closed||0,'#4ade80'],
+      ].map(([lbl,icon,val,c])=>\`<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px;text-align:center;">
+        <div style="font-size:18px;font-weight:800;color:\${c};">\${val}</div>
+        <div style="font-size:10px;color:#64748b;margin-top:2px;">\${icon} \${lbl}</div>
       </div>\`).join('')}
     </div>
 
-    <!-- Today's Schedule -->
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-bottom:20px;">
-      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">📅 Today's Planned Actions <span style="font-weight:400;font-size:11px;color:#475569;">(as of \${new Date().toLocaleTimeString()})</span></div>
-      \${schedHtml}
-      \${(schedule?.channels?.email?.needs_email?.length || 0) > 0 ? \`<div class="alert-warning" style="margin-top:12px;font-size:12px;"><strong>⚠️ \${schedule.channels.email.needs_email.length} leads need email addresses</strong> before email channel can proceed.<br><span style="color:#94a3b8;">Use PATCH /api/micro-scale/leads/:id to add real business emails.</span></div>\` : ''}
-    </div>
-
-    <!-- Last Run Summary -->
-    \${lastRunHtml}
-
-    <!-- Channel Run Controls -->
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-top:20px;">
-      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">🎛️ Run Individual Channels</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button onclick="engineRunChannel('email')" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;font-size:13px;">📧 Email Only</button>
-        <button onclick="engineRunChannel('sms')" class="btn" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;font-size:13px;">💬 SMS Only</button>
-        <button onclick="engineRunChannel('call')" class="btn" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;font-size:13px;">📞 Calls Only</button>
-        <button onclick="engineResetDay()" class="btn" style="background:#33415522;color:#94a3b8;border:1px solid #33415544;font-size:13px;">🔄 Reset Daily Counters</button>
+    <!-- Phone Fallback + Call Queue -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;">
+      <!-- Phone fallback explanation -->
+      <div style="background:#1e293b;border:1px solid #f59e0b33;border-radius:10px;padding:16px;">
+        <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-bottom:10px;">📞 Phone Fallback (No-Email Leads)</div>
+        <div style="font-size:12px;color:#94a3b8;line-height:1.6;">
+          When a lead has <strong style="color:#f1f5f9;">no email address</strong>, the engine automatically:<br>
+          <span style="color:#3b82f6;">1. SMS</span> — sends text via Twilio (if configured)<br>
+          <span style="color:#f59e0b;">2. Call Queue</span> — adds to call queue for human outreach<br><br>
+          <span style="color:#475569;">Add Twilio secrets to unlock live SMS: <code style="color:#a78bfa;">TWILIO_SID</code>, <code style="color:#a78bfa;">TWILIO_TOKEN</code>, <code style="color:#a78bfa;">TWILIO_FROM</code></span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+          <button onclick="engineRunChannel('sms')" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;">💬 Run SMS+Fallback</button>
+          <button onclick="engineRunChannel('calls')" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;">📞 Show Call Queue</button>
+        </div>
       </div>
-      <div style="margin-top:12px;font-size:12px;color:#475569;">SMS and Calls require Twilio credentials. Actions are queued and dispatched when provider is configured.</div>
-    </div>
 
-    <!-- SMS + Call Queues -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px;">
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;">
-        <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;margin-bottom:12px;">💬 SMS Queue (\${queues?.sms_queue?.count || 0})</div>
-        \${(queues?.sms_queue?.items?.slice(0,3) || []).map(s => \`<div style="border-bottom:1px solid #334155;padding:8px 0;font-size:12px;">
-          <div style="color:#f1f5f9;font-weight:600;">\${s.business_name}</div>
-          <div style="color:#94a3b8;">\${s.phone}</div>
-          <div style="color:#475569;margin-top:2px;font-size:11px;">\${s.message?.slice(0,70)}...</div>
-        </div>\`).join('') || \`<div style="color:#475569;font-size:13px;text-align:center;padding:16px;">Queue empty</div>\`}
-      </div>
-      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;">
-        <div style="font-size:13px;font-weight:700;color:#f59e0b;text-transform:uppercase;margin-bottom:12px;">📞 Call Queue (\${queues?.call_queue?.count || 0})</div>
-        \${(queues?.call_queue?.items?.slice(0,3) || []).map(c => \`<div style="border-bottom:1px solid #334155;padding:8px 0;font-size:12px;">
-          <div style="color:#f1f5f9;font-weight:600;">\${c.business_name}</div>
-          <div style="color:#94a3b8;">\${c.phone}</div>
-          <div style="color:#475569;margin-top:2px;font-size:11px;">\${c.script?.slice(0,70)}...</div>
-        </div>\`).join('') || \`<div style="color:#475569;font-size:13px;text-align:center;padding:16px;">Queue empty</div>\`}
+      <!-- Call queue -->
+      <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-size:13px;font-weight:700;color:#f59e0b;">📞 Call Queue</span>
+          <span style="background:#f59e0b22;color:#f59e0b;padding:2px 8px;border-radius:9999px;font-size:11px;">\${callQueue?.total_queued||0} queued</span>
+          <button onclick="clearCallQueue()" style="margin-left:auto;background:none;color:#475569;border:none;font-size:11px;cursor:pointer;">Clear</button>
+        </div>
+        \${callQueueRows}
       </div>
     </div>
 
-    <!-- Run History Log -->
-    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;margin-top:20px;overflow-x:auto;">
-      <div style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:14px;">📋 Run History (\${runs.length} runs)</div>
-      \${runs.length === 0 ? '<div style="color:#475569;text-align:center;padding:24px;font-size:13px;">No runs yet. Click "Run Engine Now" to start.</div>' : \`
-      <table style="width:100%;border-collapse:collapse;font-size:12px;">
-        <thead><tr style="color:#475569;font-size:11px;text-transform:uppercase;">
-          <th style="padding:6px 8px;text-align:left;">Run ID</th>
+    <!-- Last Run -->
+    \${lastRun ? \`
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:18px;">
+      <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">Last Run — \${lastRun.run_id}</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;font-size:12px;">
+        <div><div style="color:#64748b;">Started</div><div style="color:#f1f5f9;">\${new Date(lastRun.started_at).toLocaleString()}</div></div>
+        <div><div style="color:#64748b;">Trigger</div><div style="color:#a78bfa;">\${lastRun.triggered_by}</div></div>
+        <div><div style="color:#64748b;">Emails</div><div style="color:#10b981;font-weight:700;">\${lastRun.emails_sent}</div></div>
+        <div><div style="color:#64748b;">SMS</div><div style="color:#3b82f6;font-weight:700;">\${lastRun.sms_sent}</div></div>
+        <div><div style="color:#64748b;">Status</div><div style="font-weight:700;color:\${{COMPLETED:'#10b981',HARD_STOP:'#ef4444',ERROR:'#f59e0b'}[lastRun.status]||'#94a3b8'};">\${lastRun.status}</div></div>
+      </div>
+      \${lastRun.environment_breach ? \`<div style="margin-top:10px;background:#ef444411;border:1px solid #ef444433;border-radius:6px;padding:8px 12px;font-size:12px;color:#ef4444;">⚠️ ENVIRONMENT_BREACH detected in last run — \${lastRun.hard_stop_reason}</div>\` : ''}
+    </div>\` : '<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px;text-align:center;color:#475569;font-size:13px;margin-bottom:18px;">No runs yet — click ▶ Run Now to start the first daily cycle.</div>'}
+
+    <!-- Channel Controls -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:18px;">
+      <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:12px;">🎛️ Channel Controls</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="engineRunChannel('email')" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;">📧 Email Only</button>
+        <button onclick="engineRunChannel('sms')" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f633;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;">💬 SMS + Phone Fallback</button>
+        <button onclick="engineRunChannel('calls')" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b33;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;">📞 Calls Queue</button>
+        <button onclick="engineResetDay()" style="background:#33415522;color:#94a3b8;border:1px solid #33415544;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;">🔄 Reset Counters</button>
+      </div>
+    </div>
+
+    <!-- Run History -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;overflow-x:auto;">
+      <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:12px;">📋 Run History (\${runs.length})</div>
+      \${runs.length===0 ? '<div style="color:#475569;text-align:center;padding:20px;font-size:12px;">No runs yet.</div>' : \`
+      <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px;">
+        <thead><tr style="color:#475569;font-size:10px;text-transform:uppercase;border-bottom:1px solid #334155;">
+          <th style="padding:6px 8px;text-align:left;">ID</th>
           <th style="padding:6px 8px;text-align:left;">Started</th>
           <th style="padding:6px 8px;text-align:left;">Env</th>
-          <th style="padding:6px 8px;text-align:left;">Trigger</th>
+          <th style="padding:6px 8px;text-align:left;">By</th>
           <th style="padding:6px 8px;text-align:left;">📧</th>
           <th style="padding:6px 8px;text-align:left;">💬</th>
           <th style="padding:6px 8px;text-align:left;">📞</th>
-          <th style="padding:6px 8px;text-align:left;">Gate</th>
+          <th style="padding:6px 8px;text-align:left;">Status</th>
           <th style="padding:6px 8px;text-align:left;">Errors</th>
+          <th style="padding:6px 8px;text-align:left;">Duration</th>
         </tr></thead>
         <tbody>\${logRows}</tbody>
       </table>\`}
     </div>
 
-    <!-- Isolation Status -->
-    <div style="background:#1e293b;border:1px solid #a855f722;border-radius:10px;padding:16px;margin-top:20px;">
-      <div style="font-size:13px;font-weight:700;color:#a855f7;text-transform:uppercase;margin-bottom:10px;">🛡️ Environment Isolation Active</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;">
-        \${Object.entries(status.isolation_rules || {}).map(([k,v]) => \`<div style="display:flex;align-items:center;gap:6px;color:\${v ? '#10b981' : '#ef4444'};"><span>\${v ? '✅' : '❌'}</span><span>\${k.replace(/_/g,' ')}</span></div>\`).join('')}
+    <!-- Safety gates -->
+    <div style="background:#1e293b;border:1px solid #a855f722;border-radius:10px;padding:14px 18px;margin-top:16px;">
+      <div style="font-size:12px;font-weight:700;color:#a855f7;text-transform:uppercase;margin-bottom:8px;">🛡️ Active Safety Gates</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        \${(status.safety_gates||[]).map(g=>\`<span style="background:#a855f711;color:#a855f7;border:1px solid #a855f733;padding:3px 10px;border-radius:9999px;font-size:11px;">\${g}</span>\`).join('')}
       </div>
     </div>
   \`;
 }
 
 async function engineRunNow() {
-  if (!confirm('Run the autonomous engine now? This will send real emails if leads have email addresses and RESEND_API_KEY is configured.')) return;
-  showToast('Running engine...', 'info');
+  if (!confirm('Run the autonomous engine now? Real emails will be sent if RESEND_API_KEY is set and leads have emails.')) return;
+  showToast('Running full engine cycle...', 'info');
   const r = await api('POST', '/engine/run', { dry_run: false });
   if (r) {
-    showToast(\`Run complete: \${r.totals?.emails_sent || 0} emails, \${r.totals?.sms_queued || 0} SMS, \${r.totals?.calls_queued || 0} calls\`, 'success');
+    const breach = r.environment_breach ? ' ⚠️ BREACH!' : '';
+    showToast(\`Done: \${r.emails_sent||0} emails · \${r.sms_sent||0} SMS · status=\${r.status}\${breach}\`, r.status==='HARD_STOP'?'error':'success');
     await renderEngine();
   }
 }
 
 async function engineRunDryRun() {
-  showToast('Running dry run...', 'info');
+  showToast('Running dry run (no real sends)...', 'info');
   const r = await api('POST', '/engine/run', { dry_run: true });
   if (r) {
-    showToast(\`Dry run: would send \${r.totals?.emails_sent || 0} emails, \${r.totals?.sms_queued || 0} SMS, \${r.totals?.calls_queued || 0} calls\`, 'warning');
+    showToast(\`Dry run complete: \${r.emails_sent||0} emails · \${r.sms_sent||0} SMS · \${r.status}\`, 'warning');
     await renderEngine();
   }
 }
 
 async function engineRunChannel(channel) {
-  const dryRun = !confirm(\`Run \${channel.toUpperCase()} channel now (real sends)? Click Cancel for dry run.\`);
-  showToast(\`Running \${channel} channel\${dryRun ? ' (dry run)' : ''}...\`, 'info');
+  const dryRun = !confirm(\`Run \${channel.toUpperCase()} channel with real sends? Cancel = dry run.\`);
+  showToast(\`Running \${channel}\${dryRun?' (dry run)':''}...\`, 'info');
   const r = await api('POST', '/engine/run-channel', { channel, dry_run: dryRun });
   if (r) {
-    showToast(\`\${channel} run complete\`, 'success');
+    showToast(\`\${channel} complete: \${r.emails_sent||0} emails · \${r.sms_sent||0} SMS · \${r.status}\`, 'success');
     await renderEngine();
   }
 }
 
 async function enginePause() {
-  const reason = prompt('Pause reason (optional):') || 'Manual pause';
-  const r = await api('POST', '/engine/pause', { reason });
-  if (r) { showToast('Engine paused', 'warning'); await renderEngine(); }
+  const r = await api('POST', '/engine/pause', {});
+  if (r) { showToast('Engine paused — cron will skip until resumed', 'warning'); await renderEngine(); }
 }
 
 async function engineResume() {
   const r = await api('POST', '/engine/resume', {});
-  if (r) { showToast('Engine resumed — will run at next cron trigger', 'success'); await renderEngine(); }
+  if (r) { showToast('Engine resumed — next cron will run automatically', 'success'); await renderEngine(); }
 }
 
 async function engineResetDay() {
-  if (!confirm('Reset daily counters for today? This allows re-running today\'s sends.')) return;
+  if (!confirm('Reset today\\'s daily counters? This lets you re-run channels today.')) return;
   const r = await api('POST', '/engine/reset-day', {});
   if (r) { showToast('Daily counters reset', 'info'); await renderEngine(); }
+}
+
+async function logCall(leadId, businessName) {
+  const disposition = prompt(\`Log call for \${businessName}\\nDisposition (ANSWERED/VOICEMAIL/NO_ANSWER/INTERESTED/NOT_INTERESTED/CALLBACK_REQUESTED):\`);
+  if (!disposition) return;
+  const notes = prompt('Notes (optional):') || '';
+  const r = await api('POST', '/engine/calls/log', { lead_id: leadId, disposition: disposition.toUpperCase(), notes });
+  if (r?.logged) { showToast(\`Call logged: \${disposition}\`, 'success'); await renderEngine(); }
+}
+
+async function clearCallQueue() {
+  if (!confirm('Clear the call queue?')) return;
+  await api('POST', '/engine/calls/queue/clear', {});
+  showToast('Call queue cleared', 'info');
+  await renderEngine();
 }
 
 // Mobile menu

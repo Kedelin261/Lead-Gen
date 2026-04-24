@@ -256,6 +256,142 @@ function buildSmsBody(lead: MicroLead): string {
   return msgs[Math.floor(Math.random() * msgs.length)];
 }
 
+// ─── PHONE OUTREACH FALLBACK ──────────────────────────────────────────────────
+// When a lead has NO email address, fall back to:
+//   1. SMS (if phone available + Twilio configured)
+//   2. Call queue (log lead for human-initiated call)
+// This runs AUTOMATICALLY inside the daily cycle for no-email leads.
+async function runPhoneFallback(
+  DB: D1Database,
+  env: AppEnv,
+  counters: DailyCounters,
+  twilioSid?: string,
+  twilioToken?: string,
+  twilioFrom?: string,
+  dryRun = false,
+): Promise<{ results: unknown[]; sms_sent: number; calls_queued: number; errors: string[] }> {
+  const results: unknown[] = [];
+  const errors: string[] = [];
+  let sms_sent = 0;
+  let calls_queued = 0;
+
+  const leads = await loadLeads(DB);
+
+  // No-email leads that haven't been contacted yet (not SMS'd, not in call queue)
+  const noEmailLeads = leads.filter(l => {
+    const hasEmail = !!l.email;
+    const alreadySmsed = !!(l as MicroLead & { sms_sent?: boolean }).sms_sent;
+    const alreadyCallQueued = !!(l as MicroLead & { call_queued?: boolean }).call_queued;
+    return !hasEmail && !alreadySmsed && !alreadyCallQueued && l.phone;
+  });
+
+  if (noEmailLeads.length === 0) {
+    results.push({
+      channel: 'phone_fallback',
+      status: 'NO_CANDIDATES',
+      reason: 'All no-email leads already contacted via phone or have no phone number',
+    });
+    return { results, sms_sent, calls_queued, errors };
+  }
+
+  const smsRemaining = counters.sms_cap - counters.sms_sent;
+  const callsRemaining = counters.calls_cap - counters.calls_logged;
+
+  for (const lead of noEmailLeads) {
+    // ── Try SMS first ─────────────────────────────────────────────────────
+    if (smsRemaining > sms_sent && (twilioSid || dryRun)) {
+      const smsBody = buildSmsBody(lead);
+
+      if (dryRun || !twilioSid) {
+        results.push({
+          id: lead.id,
+          business_name: lead.business_name,
+          phone: lead.phone,
+          channel: 'sms_fallback',
+          reason: 'NO_EMAIL_AVAILABLE — falling back to SMS',
+          body_preview: smsBody.slice(0, 80) + '…',
+          status: 'DRY_RUN',
+          dry_run: true,
+        });
+        sms_sent++;
+      } else {
+        try {
+          const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+          const res = await fetch(twilioUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Basic ${btoa(`${twilioSid}:${twilioToken || ''}`)}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({ To: lead.phone, From: twilioFrom || '', Body: smsBody }).toString(),
+          });
+
+          if (res.ok) {
+            sms_sent++;
+            const updated = { ...lead } as MicroLead & { sms_sent: boolean; sms_sent_at: string; outreach_channel: string };
+            updated.sms_sent = true;
+            updated.sms_sent_at = new Date().toISOString();
+            updated.outreach_channel = 'SMS_FALLBACK';
+            try { await persistLead(DB, updated); } catch { /* ignore */ }
+            results.push({
+              id: lead.id, business_name: lead.business_name, phone: lead.phone,
+              channel: 'sms_fallback', status: 'SENT',
+              reason: 'NO_EMAIL_AVAILABLE — SMS fallback sent',
+            });
+          } else {
+            const err = `Twilio ${res.status}`;
+            errors.push(`${lead.id}: ${err}`);
+            results.push({ id: lead.id, business_name: lead.business_name, phone: lead.phone, channel: 'sms_fallback', status: 'FAILED', error: err });
+          }
+        } catch (e: unknown) {
+          const err = e instanceof Error ? e.message : String(e);
+          errors.push(`${lead.id}: ${err}`);
+        }
+      }
+      continue; // don't also queue for call if SMS sent
+    }
+
+    // ── Fall back to call queue ───────────────────────────────────────────
+    if (callsRemaining > calls_queued) {
+      try {
+        const callQueue = await readKey<unknown[]>(DB, 'engine_call_queue', []);
+        const alreadyQueued = (callQueue as Array<{ lead_id: string }>).some(q => q.lead_id === lead.id);
+        if (!alreadyQueued) {
+          callQueue.push({
+            lead_id: lead.id,
+            business_name: lead.business_name,
+            phone: lead.phone,
+            industry: lead.industry,
+            queued_at: new Date().toISOString(),
+            reason: 'NO_EMAIL_AVAILABLE — queued for human-initiated call',
+            priority: 'NORMAL',
+            env,
+          });
+          await writeKey(DB, 'engine_call_queue', callQueue);
+          calls_queued++;
+
+          // Tag lead as call-queued
+          const updated = { ...lead } as MicroLead & { call_queued: boolean; call_queued_at: string; outreach_channel: string };
+          updated.call_queued = true;
+          updated.call_queued_at = new Date().toISOString();
+          updated.outreach_channel = 'CALL_QUEUE_FALLBACK';
+          try { await persistLead(DB, updated); } catch { /* ignore */ }
+
+          results.push({
+            id: lead.id, business_name: lead.business_name, phone: lead.phone,
+            channel: 'call_queue_fallback', status: 'QUEUED',
+            reason: 'NO_EMAIL_AVAILABLE — added to call queue for human outreach',
+          });
+        }
+      } catch (e: unknown) {
+        errors.push(`call_queue ${lead.id}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+
+  return { results, sms_sent, calls_queued, errors };
+}
+
 // ─── CORE EMAIL RUNNER ───────────────────────────────────────────────────────
 async function runEmailChannel(
   DB: D1Database,
@@ -692,8 +828,10 @@ async function runDailyCycle(
     run.gate_status = 'PASSED';
   }
 
-  // ── SMS ────────────────────────────────────────────────────────────────────
+  // ── PHONE FALLBACK — leads with no email get SMS or call queue ────────────
+  // Runs alongside email channel for no-email leads
   if (channel === 'all' || channel === 'sms') {
+    // First: dedicated SMS channel for email-ready leads
     const smsResult = await runSmsChannel(
       DB,
       appEnv,
@@ -712,11 +850,32 @@ async function runDailyCycle(
       counters.sms_sent += smsResult.sent;
       await writeKey(DB, 'engine_daily_counters', counters);
     }
+
+    // Second: phone fallback for no-email leads (SMS → call queue)
+    const phoneFallback = await runPhoneFallback(
+      DB,
+      appEnv,
+      counters,
+      (env as unknown as Record<string, string>).TWILIO_SID,
+      (env as unknown as Record<string, string>).TWILIO_TOKEN,
+      (env as unknown as Record<string, string>).TWILIO_FROM,
+      dryRun,
+    );
+    run.sms_sent += phoneFallback.sms_sent;
+    run.sms_attempted += phoneFallback.results.length;
+    (run.results as unknown[]).push(...phoneFallback.results);
+    run.errors.push(...phoneFallback.errors);
+
+    if (!dryRun && phoneFallback.sms_sent > 0) {
+      counters.sms_sent += phoneFallback.sms_sent;
+      await writeKey(DB, 'engine_daily_counters', counters);
+    }
   }
 
-  // ── CALLS — log-only (no auto-dialer; humans initiate calls) ──────────────
+  // ── CALLS — human-initiated; engine populates call queue for no-email leads ─
   if (channel === 'all' || channel === 'calls') {
     const callsRemaining = counters.calls_cap - counters.calls_logged;
+    const callQueue = await readKey<unknown[]>(DB, 'engine_call_queue', []);
     if (callsRemaining <= 0) {
       (run.results as unknown[]).push({ channel: 'calls', status: 'CAP_REACHED', cap: counters.calls_cap });
     } else {
@@ -724,7 +883,9 @@ async function runDailyCycle(
         channel: 'calls',
         status: 'READY',
         calls_remaining: callsRemaining,
-        message: 'Calls are human-initiated. Use POST /api/engine/calls/log to record dispositions.',
+        queued_for_call: callQueue.length,
+        message: 'Calls are human-initiated. No-email leads are auto-queued. Use POST /api/engine/calls/log to record dispositions.',
+        call_queue_endpoint: 'GET /api/engine/calls/queue',
       });
     }
   }
@@ -1150,5 +1311,53 @@ engine.get('/calls', async (c) => {
   });
 });
 
+// ─── GET /api/engine/calls/queue ─────────────────────────────────────────────
+// Shows leads queued for human-initiated phone outreach (no-email fallback)
+engine.get('/calls/queue', async (c) => {
+  const { DB } = c.env;
+  const callQueue = await readKey<unknown[]>(DB, 'engine_call_queue', []);
+  const counters = await getOrInitCounters(DB);
+  return c.json({
+    total_queued: callQueue.length,
+    calls_remaining_today: Math.max(0, counters.calls_cap - counters.calls_logged),
+    queue: callQueue,
+    instruction: 'Call each lead, then POST /api/engine/calls/log with lead_id and disposition',
+  });
+});
+
+// ─── POST /api/engine/calls/queue/clear ──────────────────────────────────────
+engine.post('/calls/queue/clear', async (c) => {
+  const { DB } = c.env;
+  await writeKey(DB, 'engine_call_queue', []);
+  return c.json({ cleared: true, cleared_at: new Date().toISOString() });
+});
+
 export default engine;
 export { runDailyCycle };
+
+// ─── CLOUDFLARE CRON SCHEDULED HANDLER ───────────────────────────────────────
+// Called by Cloudflare's cron trigger (configured in wrangler.jsonc or Dashboard)
+// Schedule: "0 14 * * 1-5"  →  09:00 CT / 14:00 UTC, Mon–Fri
+export async function handleScheduledEvent(env: Bindings): Promise<void> {
+  const DB = env.DB;
+  if (!DB) return;
+
+  const appEnv = await readEnv(DB);
+
+  // Skip if paused
+  const paused = await readKey<boolean>(DB, 'engine_paused', false);
+  if (paused) {
+    console.log('[CRON] Engine is paused — skipping scheduled run');
+    return;
+  }
+
+  console.log(`[CRON] Starting scheduled daily cycle — env=${appEnv} time=${new Date().toISOString()}`);
+
+  const run = await runDailyCycle(DB, env, appEnv, 'CRON', 'all', false);
+
+  console.log(`[CRON] Run complete — status=${run.status} emails_sent=${run.emails_sent} sms_sent=${run.sms_sent} duration=${run.duration_ms}ms`);
+
+  if (run.environment_breach) {
+    console.error(`[CRON] ENVIRONMENT_BREACH detected! reason=${run.hard_stop_reason}`);
+  }
+}
