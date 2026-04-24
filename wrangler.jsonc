@@ -12,8 +12,13 @@
     }
   ],
   // Cloudflare Cron Trigger NOTE (Pages):
-  // Cron triggers for Cloudflare Pages are configured via the Cloudflare Dashboard:
+  // Cron triggers for Cloudflare Pages MUST be configured via the Cloudflare Dashboard:
   //   Pages → leadgen-pro → Settings → Functions → Cron Triggers
-  //   Add cron expression: "0 14 * * *"  (daily 14:00 UTC = 9:00 AM CST)
-  // The scheduled() export in src/index.tsx handles the trigger automatically.
+  //
+  //   Add TWO cron expressions:
+  //     "0 10 * * *"  →  10:00 AM UTC daily  (System Orchestrator §2)
+  //     "0 14 * * *"  →  09:00 AM CST legacy engine fallback
+  //
+  // The scheduled() export in src/index.tsx handles BOTH triggers automatically.
+  // POST /api/system/run-daily?force=true  →  manual override
 }
