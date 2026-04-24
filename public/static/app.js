@@ -39,18 +39,15 @@ function navigate(page, el) {
 // ============= API HELPERS =============
 async function api(method, path, data) {
   try {
-    const config = {
-      method,
-      headers: { 'Content-Type': 'application/json' }
-    };
-    if (data) config.data = data;
     const response = method === 'GET'
       ? await axios.get('/api' + path)
       : await axios[method.toLowerCase()]('/api' + path, data);
     return response.data;
   } catch (e) {
-    console.error('API Error:', e);
-    showToast(e.response?.data?.error || 'API Error', 'error');
+    const endpoint = '/api' + path;
+    console.error('[API FAIL] ' + method + ' ' + endpoint, e);
+    const errMsg = (e.response && e.response.data && e.response.data.error) || e.message || 'Request failed';
+    showToast(method + ' ' + endpoint + ' — ' + errMsg, 'error');
     return null;
   }
 }
@@ -114,14 +111,14 @@ async function renderDashboard() {
     api('GET', '/dashboard/insights')
   ]);
 
-  if (!statsData) { showPageError('Could not load dashboard stats'); return; }
+  if (!statsData) { showPageError('Failed to load dashboard stats from /api/dashboard/stats'); return; }
   const s = statsData;
   state.stats = s;
 
   // Update topbar
-  document.getElementById('top-revenue').textContent = `\$${(s.revenue_today || 0).toLocaleString()}`;
+  document.getElementById('top-revenue').textContent = '$' + (s.revenue_today || 0).toLocaleString();
   document.getElementById('top-leads').textContent = s.leads_today || 0;
-  document.getElementById('top-conv').textContent = `${s.conversion_rate || 0}%`;
+  document.getElementById('top-conv').textContent = (s.conversion_rate || 0) + '%';
 
   const funnelItems = funnelData?.funnel || [];
   const funnelHTML = funnelItems.map(f => `
@@ -160,7 +157,7 @@ async function renderDashboard() {
       </div>
       <div class="card">
         <h3 style="font-size:15px;font-weight:700;margin-bottom:16px;color:#f1f5f9;">🔄 Pipeline Funnel</h3>
-        ${funnelHTML || '<div style="color:#64748b;text-align:center;padding:20px;">No leads yet</div>'}
+        ${funnelHTML || '<div style="color:#64748b;text-align:center;padding:20px;">No real data has been recorded yet.</div>'}
       </div>
     </div>
 
@@ -208,7 +205,7 @@ function renderKPICard(title, value, icon, color, sub) {
 // ============= LEADS PAGE =============
 async function renderLeads() {
   const data = await api('GET', '/leads?limit=100');
-  if (!data) { showPageError('Could not load leads'); return; }
+  if (!data) { showPageError('Failed to load leads from /api/leads'); return; }
   const leads = data.leads || [];
   state.leads = leads;
   document.getElementById('nav-leads-count').textContent = data.total || 0;
@@ -248,39 +245,44 @@ async function renderLeads() {
           ${renderLeadsRows(leads)}
         </tbody>
       </table>
-      ${leads.length === 0 ? '<div style="text-align:center;padding:40px;color:#475569;">No leads yet. Add your first lead to get started.</div>' : ''}
+      ${leads.length === 0 ? '<div style="text-align:center;padding:40px;color:#475569;">No real data has been recorded yet. Add your first lead to get started.</div>' : ''}
     </div>
   `;
 }
 
 function renderLeadsRows(leads) {
-  return leads.map(l => {
+  if (!leads || leads.length === 0) return '';
+  return leads.map(function(l) {
     const scoreColor = l.lead_score >= 80 ? '#4ade80' : l.lead_score >= 60 ? '#fbbf24' : '#f87171';
-    return `<tr>
-      <td>
-        <div style="font-weight:600;color:#f1f5f9;">${l.name}</div>
-        ${l.email ? '<div style="font-size:12px;color:#64748b;">'+l.email+'</div>' : ''}
-      </td>
-      <td style="color:#94a3b8;">${l.industry || '—'}</td>
-      <td style="color:#94a3b8;">${l.city || '—'}${l.state ? ', '+l.state : ''}</td>
-      <td style="color:#94a3b8;">${l.phone || '—'}</td>
-      <td>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <div class="score-bar" style="width:60px;"><div class="score-fill" style="width:${l.lead_score}%;background:${scoreColor};"></div></div>
-          <span style="color:${scoreColor};font-weight:700;font-size:13px;">${l.lead_score}</span>
-        </div>
-      </td>
-      <td><span class="badge badge-${l.status.toLowerCase()}">${l.status}</span></td>
-      <td><span style="font-size:12px;color:${l.website_status==='NONE'?'#4ade80':'#fbbf24'};">${l.website_status}</span></td>
-      <td>
-        <div style="display:flex;gap:6px;">
-          <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="viewLead(${l.id})" title="View">👁️</button>
-          <button class="btn btn-primary" style="padding:4px 8px;font-size:12px;" onclick="generateDemo(${l.id})" title="Generate Demo">🌐</button>
-          <button class="btn btn-success" style="padding:4px 8px;font-size:12px;" onclick="runOutreach(${l.id})" title="Start Outreach">📤</button>
-          <button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="createPaymentLink(${l.id})" title="Payment Link">💳</button>
-        </div>
-      </td>
-    </tr>`;
+    const status = l.status || 'NEW';
+    const wsStatus = l.website_status || 'UNKNOWN';
+    const wsColor = wsStatus === 'NONE' ? '#4ade80' : wsStatus === 'UNKNOWN' ? '#64748b' : '#fbbf24';
+    const scoreVal = l.lead_score || 0;
+    return '<tr>' +
+      '<td>' +
+        '<div style="font-weight:600;color:#f1f5f9;">' + (l.name || '—') + '</div>' +
+        (l.email ? '<div style="font-size:12px;color:#64748b;">' + l.email + '</div>' : '') +
+      '</td>' +
+      '<td style="color:#94a3b8;">' + (l.industry || '—') + '</td>' +
+      '<td style="color:#94a3b8;">' + (l.city || '—') + (l.state ? ', ' + l.state : '') + '</td>' +
+      '<td style="color:#94a3b8;">' + (l.phone || '—') + '</td>' +
+      '<td>' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<div class="score-bar" style="width:60px;"><div class="score-fill" style="width:' + scoreVal + '%;background:' + scoreColor + ';"></div></div>' +
+          '<span style="color:' + scoreColor + ';font-weight:700;font-size:13px;">' + scoreVal + '</span>' +
+        '</div>' +
+      '</td>' +
+      '<td><span class="badge badge-' + status.toLowerCase() + '">' + status + '</span></td>' +
+      '<td><span style="font-size:12px;color:' + wsColor + ';" title="Website status">' + wsStatus + '</span></td>' +
+      '<td>' +
+        '<div style="display:flex;gap:6px;">' +
+          '<button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="viewLead(' + l.id + ')" title="View lead details">\ud83d\udc41\ufe0f</button>' +
+          '<button class="btn btn-primary" style="padding:4px 8px;font-size:12px;" onclick="generateDemo(' + l.id + ')" title="Generate AI demo site">\ud83c\udf10</button>' +
+          '<button class="btn btn-success" style="padding:4px 8px;font-size:12px;" onclick="runOutreach(' + l.id + ')" title="Start outreach sequence">\ud83d\udce4</button>' +
+          '<button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;" onclick="createPaymentLink(' + l.id + ')" title="Create Stripe payment link">\ud83d\udcb3</button>' +
+        '</div>' +
+      '</td>' +
+    '</tr>';
   }).join('');
 }
 
@@ -301,7 +303,7 @@ function filterLeads() {
 // ============= DEMOS PAGE =============
 async function renderDemos() {
   const data = await api('GET', '/demos?limit=100');
-  if (!data) { showPageError('Could not load demos'); return; }
+  if (!data) { showPageError('Failed to load demos from /api/demos'); return; }
   const demos = data.demos || [];
 
   document.getElementById('page-content').innerHTML = `
@@ -326,7 +328,7 @@ async function renderDemos() {
             <button class="btn btn-danger" style="font-size:13px;" onclick="deleteDemo(${d.id})">🗑️</button>
           </div>
         </div>
-      `).join('') || '<div style="grid-column:1/-1;text-align:center;padding:60px;color:#475569;">No demos yet. Generate demos from the Leads page.</div>'}
+      `).join('') || '<div style="grid-column:1/-1;text-align:center;padding:60px;color:#475569;">No real data has been recorded yet. Generate demos from the Leads page.</div>'}
     </div>
   `;
 }
@@ -373,7 +375,7 @@ async function renderOutreach() {
               <div style="font-size:11px;color:#475569;margin-top:4px;">${o.sent_at ? new Date(o.sent_at).toLocaleString() : '—'}</div>
             </div>
           </div>
-        `).join('') || '<div style="text-align:center;padding:40px;color:#475569;">No outreach activity yet</div>'}
+        `).join('') || '<div style="text-align:center;padding:40px;color:#475569;">No real data has been recorded yet.</div>'}
       </div>
     </div>
   `;
@@ -391,6 +393,7 @@ function filterOutreach(channel, btn) {
 // ============= PIPELINE (KANBAN) =============
 async function renderPipeline() {
   const data = await api('GET', '/leads?limit=200');
+  if (!data) { showPageError('Failed to load pipeline from /api/leads'); return; }
   const leads = data?.leads || [];
 
   const stages = ['NEW','CONTACTED','RESPONDED','INTERESTED','CLOSED','LOST'];
@@ -425,6 +428,7 @@ async function renderPipeline() {
 // ============= CONVERSATIONS =============
 async function renderConversations() {
   const data = await api('GET', '/conversations');
+  if (!data) { showPageError('Failed to load conversations from /api/conversations'); return; }
   const threads = data?.threads || [];
   const unread = data?.unread_count || 0;
 
@@ -443,7 +447,7 @@ async function renderConversations() {
             <div style="font-size:11px;color:#64748b;">${t.messages[0]?.message?.slice(0,40) || '—'}...</div>
             <div style="font-size:10px;color:#475569;margin-top:4px;">${t.messages.length} messages</div>
           </div>
-        `).join('') || '<div style="padding:40px;text-align:center;color:#475569;">No conversations yet</div>'}
+        `).join('') || '<div style="padding:40px;text-align:center;color:#475569;">No real data has been recorded yet.</div>'}
       </div>
       <!-- Message view -->
       <div class="card" style="flex:1;display:flex;flex-direction:column;">
@@ -465,8 +469,14 @@ async function renderConversations() {
 // ============= PAYMENTS PAGE =============
 async function renderPayments() {
   const data = await api('GET', '/payments');
+  if (!data) { showPageError('Failed to load payments from /api/payments'); return; }
   const payments = data?.payments || [];
   const stats = data?.stats || {};
+  // Ensure numeric types (SQLite SUM returns null when no rows)
+  stats.total_revenue = parseFloat(stats.total_revenue) || 0;
+  stats.today_revenue = parseFloat(stats.today_revenue) || 0;
+  stats.total_paid = parseInt(stats.total_paid) || 0;
+  stats.total_pending = parseInt(stats.total_pending) || 0;
 
   document.getElementById('page-content').innerHTML = `
     <!-- Stats -->
@@ -484,7 +494,7 @@ async function renderPayments() {
           ${payments.map(p => `
             <tr>
               <td><div style="font-weight:600;color:#f1f5f9;">${p.business_name}</div><div style="font-size:12px;color:#64748b;">${p.city||'—'}</div></td>
-              <td style="color:#4ade80;font-weight:700;">\$${(p.amount/100).toFixed(2)}</td>
+              <td style="color:#4ade80;font-weight:700;">\$${((p.amount||0)/100).toFixed(2)}</td>
               <td><span class="badge ${p.status==='PAID'?'badge-closed':p.status==='PENDING'?'badge-new':'badge-lost'}">${p.status}</span></td>
               <td style="color:#64748b;font-size:13px;">${p.paid_at ? new Date(p.paid_at).toLocaleDateString() : new Date(p.created_at).toLocaleDateString()}</td>
               <td>
@@ -492,7 +502,7 @@ async function renderPayments() {
                 ${p.status==='PENDING' ? `<button class="btn btn-primary" style="font-size:12px;padding:4px 8px;margin-left:6px;" onclick="resendPayment(${p.id})">📧 Resend</button>` : ''}
               </td>
             </tr>
-          `).join('') || '<tr><td colspan="5" style="text-align:center;padding:40px;color:#475569;">No payments yet</td></tr>'}
+          `).join('') || '<tr><td colspan="5" style="text-align:center;padding:40px;color:#475569;">No real data has been recorded yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -502,12 +512,24 @@ async function renderPayments() {
 // ============= ANALYTICS =============
 async function renderAnalytics() {
   const data = await api('GET', '/dashboard/analytics');
-  if (!data) { showPageError('Could not load analytics'); return; }
+  if (!data) { showPageError('Failed to load analytics from /api/dashboard/analytics'); return; }
+
+  const hasData = (data.channel_performance && data.channel_performance.some(c => c.sent > 0)) ||
+                  (data.industry_performance && data.industry_performance.some(i => i.total_leads > 0)) ||
+                  (parseFloat(data.total_revenue) > 0);
+
+  const revenueDisplay = parseFloat(data.total_revenue) > 0
+    ? '$' + parseFloat(data.total_revenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})
+    : 'Insufficient real data';
+  const avgDisplay = (data.avg_hours_to_close || 0) > 0
+    ? data.avg_hours_to_close + ' hrs'
+    : 'Insufficient real data';
 
   document.getElementById('page-content').innerHTML = `
+    ${!hasData ? '<div style="background:#1e293b;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin-bottom:24px;font-size:13px;color:#f59e0b;">⚠️ Insufficient real data — add leads and run outreach to generate analytics.</div>' : ''}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px;">
-      ${renderKPICard('Total Revenue', '\$'+(data.total_revenue||0).toLocaleString(), 'fas fa-dollar-sign', '#4ade80', 'all time')}
-      ${renderKPICard('Avg Time to Close', (data.avg_hours_to_close||0)+' hrs', 'fas fa-clock', '#fbbf24', 'average')}
+      ${renderKPICard('Total Revenue', revenueDisplay, 'fas fa-dollar-sign', '#4ade80', 'from closed payments')}
+      ${renderKPICard('Avg Time to Close', avgDisplay, 'fas fa-clock', '#fbbf24', 'from closed leads')}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;">
       <!-- Channel Performance -->
@@ -522,7 +544,7 @@ async function renderAnalytics() {
             </div>
             <span style="color:#fbbf24;font-weight:700;">${c.sent > 0 ? Math.round((c.replied||0)/c.sent*100) : 0}%</span>
           </div>
-        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+        `).join('') || '<div style="color:#64748b;padding:20px 0;">Insufficient real data</div>'}
       </div>
       <!-- Industry Performance -->
       <div class="card">
@@ -536,7 +558,7 @@ async function renderAnalytics() {
             </div>
             <span style="color:#4ade80;font-weight:700;">${i.total_leads > 0 ? Math.round(i.closed/i.total_leads*100) : 0}%</span>
           </div>
-        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+        `).join('') || '<div style="color:#64748b;padding:20px 0;">Insufficient real data</div>'}
       </div>
     </div>
     <!-- City Performance -->
@@ -549,7 +571,7 @@ async function renderAnalytics() {
             <div style="font-size:12px;color:#64748b;">${c.total_leads} leads · ${c.closed} closed</div>
             <div class="score-bar" style="margin-top:8px;"><div class="score-fill" style="width:${c.total_leads > 0 ? Math.round(c.closed/c.total_leads*100) : 0}%;background:#4ade80;"></div></div>
           </div>
-        `).join('') || '<div style="color:#64748b;">No data yet</div>'}
+        `).join('') || '<div style="color:#64748b;padding:20px 0;">Insufficient real data</div>'}
       </div>
     </div>
   `;
@@ -561,6 +583,7 @@ async function renderSettings() {
     api('GET', '/settings'),
     api('GET', '/settings/infrastructure')
   ]);
+  if (!settingsData) { showPageError('Failed to load settings from /api/settings'); return; }
   const s = settingsData?.settings || {};
   const infra = infraData?.checks || {};
 
@@ -645,57 +668,65 @@ async function renderSettings() {
 async function generateDemo(leadId) {
   showToast('Generating demo with AI...', 'info');
   const data = await api('POST', '/demos/generate', { lead_id: leadId });
-  if (data?.demo?.demo_url) {
+  if (data && data.demo && data.demo.demo_url) {
     showToast('Demo generated! Opening...', 'success');
     window.open(data.demo.demo_url, '_blank');
-  } else if (data?.message?.includes('already exists') && data?.demo?.demo_url) {
-    window.open(data.demo.demo_url, '_blank');
+    if (state.currentPage === 'demos') renderDemos();
+  } else if (data) {
+    showToast(data.message || 'Demo generation queued', 'info');
   }
 }
 
 async function runOutreach(leadId) {
   showToast('Running Day 1 outreach sequence...', 'info');
   const data = await api('POST', '/outreach/sequence', { lead_id: leadId, day: 1 });
-  if (data) showToast('Outreach sequence started! Check Outreach page.', 'success');
+  if (data) {
+    const note = data.sms_sent ? ' — SMS sent!' : '';
+    showToast('Outreach sequence started!' + note + ' Check Outreach page.', 'success');
+  }
 }
 
 async function createPaymentLink(leadId) {
-  showToast('Creating payment link...', 'info');
+  showToast('Creating Stripe payment link...', 'info');
   const data = await api('POST', '/payments/create-link', { lead_id: leadId });
-  if (data?.payment_link) {
-    showToast('Payment link created!', 'success');
-    navigator.clipboard?.writeText(data.payment_link).then(() => showToast('Link copied to clipboard!', 'success'));
+  if (data && data.payment_link) {
+    showToast('Stripe payment link created!', 'success');
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(data.payment_link).then(function() { showToast('Link copied to clipboard!', 'success'); }).catch(function(){});
+    }
     window.open(data.payment_link, '_blank');
+    if (state.currentPage === 'payments') renderPayments();
   }
 }
 
 async function submitLead(e) {
   e.preventDefault();
+  var nameEl = document.getElementById('lead-name');
+  if (!nameEl || !nameEl.value.trim()) { showToast('Business name is required', 'warning'); return; }
+  var g = function(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
   const leadData = {
-    name: document.getElementById('lead-name').value,
-    industry: document.getElementById('lead-industry').value,
-    phone: document.getElementById('lead-phone').value,
-    email: document.getElementById('lead-email').value,
-    city: document.getElementById('lead-city').value,
-    state: document.getElementById('lead-state').value,
-    website: document.getElementById('lead-website').value,
-    address: document.getElementById('lead-address').value,
-    notes: document.getElementById('lead-notes').value,
+    name: g('lead-name'), industry: g('lead-industry'),
+    phone: g('lead-phone'), email: g('lead-email'),
+    city: g('lead-city'), state: g('lead-state'),
+    website: g('lead-website'), address: g('lead-address'),
+    notes: g('lead-notes'), source: 'manual'
   };
   const data = await api('POST', '/leads', leadData);
-  if (data?.lead) {
-    showToast('Lead added successfully!', 'success');
+  if (data && data.lead) {
+    showToast('Lead "' + data.lead.name + '" added (score: ' + data.lead.lead_score + ')', 'success');
     closeModal('add-lead-modal');
-    document.getElementById('add-lead-form').reset();
+    if (document.getElementById('add-lead-form')) document.getElementById('add-lead-form').reset();
     if (state.currentPage === 'leads') renderLeads();
     else if (state.currentPage === 'pipeline') renderPipeline();
     else if (state.currentPage === 'dashboard') renderDashboard();
+  } else if (data && data.existing_lead) {
+    showToast('Duplicate: Lead already exists (ID ' + data.existing_lead.id + ', status: ' + data.existing_lead.status + ')', 'warning');
   }
 }
 
 async function viewLead(leadId) {
   const data = await api('GET', '/leads/' + leadId);
-  if (!data) return;
+  if (!data || !data.lead) { showToast('Could not load lead details', 'error'); return; }
   const l = data.lead;
   openModal('lead-detail-modal');
   document.getElementById('lead-detail-title').textContent = l.name;
@@ -765,41 +796,51 @@ async function viewLead(leadId) {
 }
 
 async function updateLeadStatus(leadId, status) {
-  await api('PATCH', '/leads/' + leadId, { status });
-  showToast('Status updated to ' + status, 'success');
-  viewLead(leadId); // refresh
+  const result = await api('PATCH', '/leads/' + leadId, { status });
+  if (result) {
+    showToast('Status updated to ' + status, 'success');
+    viewLead(leadId);
+    if (state.currentPage === 'pipeline') renderPipeline();
+  }
 }
 
 async function regenerateDemo(demoId) {
-  showToast('Regenerating demo...', 'info');
+  showToast('Regenerating demo with AI...', 'info');
   const data = await api('POST', '/demos/' + demoId + '/regenerate');
-  if (data) { showToast('Demo regenerated!', 'success'); renderDemos(); }
+  if (data) {
+    showToast('Demo regenerated!', 'success');
+    if (state.currentPage === 'demos') renderDemos();
+  }
 }
 
 async function deleteDemo(demoId) {
-  if (!confirm('Delete this demo?')) return;
-  await api('DELETE', '/demos/' + demoId);
-  showToast('Demo deleted', 'info');
-  renderDemos();
+  if (!confirm('Delete this demo? This cannot be undone.')) return;
+  const result = await api('DELETE', '/demos/' + demoId);
+  if (result !== null) {
+    showToast('Demo deleted', 'info');
+    renderDemos();
+  }
 }
 
 async function resendPayment(paymentId) {
-  showToast('Resending payment link...', 'info');
-  await api('POST', '/payments/' + paymentId + '/resend');
-  showToast('Payment link resent!', 'success');
+  showToast('Resending payment link via email...', 'info');
+  const result = await api('POST', '/payments/' + paymentId + '/resend');
+  if (result) showToast('Payment link resent to lead email!', 'success');
 }
 
 async function saveSettings() {
+  const cityEl = document.getElementById('set-city');
+  if (!cityEl) { showToast('Settings form not loaded', 'error'); return; }
   const data = {
-    target_city: document.getElementById('set-city').value,
-    target_state: document.getElementById('set-state').value,
-    max_emails_per_day: document.getElementById('set-emails').value,
-    max_sms_per_day: document.getElementById('set-sms').value,
-    max_calls_per_day: document.getElementById('set-calls').value,
-    min_lead_score: document.getElementById('set-minscore').value,
+    target_city: cityEl.value,
+    target_state: (document.getElementById('set-state') || {}).value || '',
+    max_emails_per_day: Number((document.getElementById('set-emails') || {}).value) || 50,
+    max_sms_per_day: Number((document.getElementById('set-sms') || {}).value) || 30,
+    max_calls_per_day: Number((document.getElementById('set-calls') || {}).value) || 100,
+    min_lead_score: Number((document.getElementById('set-minscore') || {}).value) || 60,
   };
-  await api('PATCH', '/settings', data);
-  showToast('Settings saved!', 'success');
+  const result = await api('PATCH', '/settings', data);
+  if (result) showToast('Settings saved successfully!', 'success');
 }
 
 async function toggleCampaign() {
@@ -815,38 +856,61 @@ async function toggleCampaign() {
 }
 
 function importLeads() {
-  showToast('CSV import: Use /api/leads/bulk with JSON array of leads', 'info');
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  const example = JSON.stringify({leads:[{name:'Acme Roofing',phone:'901-555-0100',email:'owner@acme.com',industry:'Roofing',city:'Memphis',state:'TN'}]},null,2);
+  modal.innerHTML = '<div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:28px;max-width:500px;width:95%;">' +
+    '<h3 style="font-size:16px;font-weight:700;color:#f1f5f9;margin:0 0 12px;">&#128229; Import Leads via API</h3>' +
+    '<p style="font-size:13px;color:#94a3b8;margin:0 0 12px;">POST JSON to <code style="color:#60a5fa;background:#0f172a;padding:2px 6px;border-radius:4px;">/api/leads/bulk</code>:</p>' +
+    '<pre style="background:#0f172a;border-radius:8px;padding:12px;font-size:11px;color:#a3e635;overflow-x:auto;margin:0 0 12px;">' + example.replace(/</g,'&lt;') + '</pre>' +
+    '<p style="font-size:12px;color:#64748b;margin:0 0 16px;">Leads scoring below 60 are auto-skipped. Max 200 per batch.</p>' +
+    '<button style="background:#3b82f6;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;width:100%;font-size:14px;font-weight:600;" onclick="document.body.removeChild(this.closest(\'div\').parentElement)">Got it</button>' +
+  '</div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
 }
 
 async function openThread(leadId) {
   const data = await api('GET', '/conversations?lead_id=' + leadId);
-  const msgs = data?.conversations || [];
+  if (!data) return;
+  const msgs = data.conversations || [];
   await api('POST', '/conversations/' + leadId + '/mark-read');
-  document.getElementById('msg-area').innerHTML = `
-    <div style="width:100%;height:100%;overflow-y:auto;padding:16px;" id="thread-messages">
-      ${msgs.map(m => `
-        <div style="display:flex;${m.direction==='outbound'?'justify-content:flex-end':'justify-content:flex-start'};margin-bottom:12px;">
-          <div style="max-width:70%;background:${m.direction==='outbound'?'#2563eb':'#334155'};padding:10px 14px;border-radius:12px;font-size:13px;color:#f1f5f9;">
-            <div>${m.message || '—'}</div>
-            <div style="font-size:10px;opacity:0.6;margin-top:4px;">${m.channel.toUpperCase()} · ${new Date(m.created_at).toLocaleString()}</div>
-          </div>
-        </div>
-      `).join('') || '<div style="text-align:center;color:#475569;padding:20px;">No messages yet</div>'}
-    </div>
-  `;
+  const msgArea = document.getElementById('msg-area');
+  if (!msgArea) return;
+  let msgsHtml = '';
+  if (msgs.length > 0) {
+    msgsHtml = msgs.map(function(m) {
+      var isOut = m.direction === 'outbound';
+      return '<div style="display:flex;' + (isOut ? 'justify-content:flex-end' : 'justify-content:flex-start') + ';margin-bottom:12px;">' +
+        '<div style="max-width:70%;background:' + (isOut ? '#2563eb' : '#334155') + ';padding:10px 14px;border-radius:12px;font-size:13px;color:#f1f5f9;">' +
+          '<div>' + (m.message || '—') + '</div>' +
+          '<div style="font-size:10px;opacity:0.6;margin-top:4px;">' + (m.channel||'sms').toUpperCase() + ' · ' + new Date(m.created_at).toLocaleString() + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } else {
+    msgsHtml = '<div style="text-align:center;color:#475569;padding:20px;">No real data has been recorded yet.</div>';
+  }
+  msgArea.innerHTML = '<div style="width:100%;height:100%;overflow-y:auto;padding:16px;" id="thread-messages">' + msgsHtml + '</div>';
   const replyArea = document.getElementById('reply-area');
-  replyArea.style.display = 'flex';
-  replyArea.dataset.leadId = leadId;
+  if (replyArea) {
+    replyArea.style.display = 'flex';
+    replyArea.dataset.leadId = leadId;
+  }
 }
 
 async function sendReply() {
   const input = document.getElementById('reply-input');
-  const leadId = document.getElementById('reply-area')?.dataset.leadId;
-  if (!input?.value || !leadId) return;
-  await api('POST', '/conversations', { lead_id: leadId, channel: 'sms', direction: 'outbound', message: input.value });
-  showToast('Reply logged', 'success');
-  input.value = '';
-  openThread(leadId);
+  const replyAreaEl = document.getElementById('reply-area');
+  const leadId = replyAreaEl && replyAreaEl.dataset.leadId;
+  if (!input || !input.value.trim()) { showToast('Enter a message first', 'warning'); return; }
+  if (!leadId) { showToast('No conversation selected', 'warning'); return; }
+  const result = await api('POST', '/conversations', { lead_id: Number(leadId), channel: 'sms', direction: 'outbound', message: input.value.trim() });
+  if (result) {
+    showToast('Reply logged as outbound SMS', 'success');
+    input.value = '';
+    openThread(leadId);
+  }
 }
 
 // ============= CHART HELPER =============
@@ -913,17 +977,20 @@ async function init() {
   // Render initial page
   renderPage('dashboard');
 
-  // Auto-refresh every 30 seconds
-  setInterval(async () => {
+  // Auto-refresh every 60 seconds
+  setInterval(async function() {
     if (state.currentPage === 'dashboard') {
       const s = await api('GET', '/dashboard/stats');
       if (s) {
-        document.getElementById('top-revenue').textContent = '\$' + (s.revenue_today || 0).toLocaleString();
-        document.getElementById('top-leads').textContent = s.leads_today || 0;
-        document.getElementById('top-conv').textContent = s.conversion_rate + '%';
+        var revEl = document.getElementById('top-revenue');
+        var leadsEl = document.getElementById('top-leads');
+        var convEl = document.getElementById('top-conv');
+        if (revEl) revEl.textContent = '$' + (s.revenue_today || 0).toLocaleString();
+        if (leadsEl) leadsEl.textContent = s.leads_today || 0;
+        if (convEl) convEl.textContent = (s.conversion_rate || 0) + '%';
       }
     }
-  }, 30000);
+  }, 60000);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1697,30 +1764,27 @@ async function saveEmailInline(leadId) {
   await renderMicroScale();
 }
 
-function exportLeadsCSV() {
-  const rows = [['ID','Business','Industry','Phone','Email','City','State','Demo URL','Sent','Replied','Interested','Closed']];
-  document.querySelectorAll('#page-content tbody tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td');
-    if (cells.length > 0) {
-      rows.push([
-        tr.id.replace('lead-row-',''),
-        cells[0]?.querySelector('div')?.textContent || '',
-        cells[1]?.textContent?.trim() || '',
-        cells[2]?.textContent?.trim() || '',
-        cells[3]?.textContent?.trim() || '',
-        '', '', '',
-        cells[5]?.textContent?.includes('✅') ? 'YES' : 'NO',
-        cells[7]?.textContent?.includes('✅') ? 'YES' : 'NO',
-        cells[8]?.textContent?.includes('✅') ? 'YES' : 'NO',
-        cells[10]?.textContent?.includes('✅') ? 'YES' : 'NO',
-      ]);
-    }
+async function exportLeadsCSV() {
+  showToast('Fetching leads for export...', 'info');
+  const data = await api('GET', '/leads?limit=500');
+  if (!data) return;
+  const leads = data.leads || [];
+  if (leads.length === 0) { showToast('No leads to export', 'warning'); return; }
+  const rows = [['ID','Business','Industry','Phone','Email','City','State','Website','Score','Status','Created']];
+  leads.forEach(l => {
+    rows.push([
+      l.id, l.name || '', l.industry || '', l.phone || '', l.email || '',
+      l.city || '', l.state || '', l.website || '',
+      l.lead_score || 0, l.status || '',
+      l.created_at ? new Date(l.created_at).toLocaleDateString() : ''
+    ]);
   });
-  const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\\n');
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-  a.download = 'memphis-leads.csv';
+  a.download = 'leads-export-' + new Date().toISOString().slice(0,10) + '.csv';
   a.click();
+  showToast('Exported ' + leads.length + ' leads', 'success');
 }
 
 async function refreshMicroScale() { await renderMicroScale(); showToast('Refreshed', 'info'); }
@@ -2079,8 +2143,11 @@ async function renderEngine() {
     ? '<button onclick="engineResume()" class="btn" style="background:#10b98122;color:#10b981;border:1px solid #10b98133;font-size:12px;padding:7px 12px;">▶ Resume</button>'
     : '<button onclick="enginePause()"  class="btn" style="background:#ef444422;color:#ef4444;border:1px solid #ef444433;font-size:12px;padding:7px 12px;">⏸ Pause</button>';
 
+  // Use real leads count from engine health data, not hardcoded value
+  const totalLeadsFromHealth = (health && health.email_channel && health.email_channel.total_leads) ||
+                               (campaignM && campaignM.total_leads) || leadUsed || 0;
   const metricKV = [
-    ['Leads','👥',10,'#94a3b8'],
+    ['Leads','👥',totalLeadsFromHealth,'#94a3b8'],
     ['w/ Email','📧',wEmail,'#60a5fa'],
     ['Sent','✉️',campaignM.total_sent||0,'#10b981'],
     ['Replied','💬',campaignM.total_replied||0,'#a78bfa'],
