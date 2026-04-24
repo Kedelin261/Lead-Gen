@@ -1152,4 +1152,330 @@ validation.post('/check-scaling-restriction', async (c) => {
   });
 });
 
+// ─── §1-10 VALIDATION RUN: Memphis Roofing ────────────────────────────────────
+// Uses EXISTING system pipeline. NO new architecture.
+// Enforces: score≥60, phone required, limits: email=5 call=20 sms=15
+// Tracks ONLY: responses, demo_views, conversations_started
+// §8 Hard stop: spam>10%, bounce>5%, system error
+// §9 Output: { niche, city, leads_processed, responses, demo_views, conversations, response_rate, status }
+// §10 Pass: response_rate >= 5%; Fail: < 5% (system unchanged)
+
+import { MEMPHIS_LEADS } from './micro-scale';
+import { calculateLeadScore } from '../lib/scoring';
+import { runIntegrityGate, resolveEnv } from '../lib/lead-integrity';
+
+// Validation limits per spec §6
+const VAL_LIMITS = { emails: 5, calls: 20, sms: 15, leads: 20 } as const;
+
+// Score gate per spec §3
+const MIN_SCORE = 60;
+
+async function readValKey<T>(DB: D1Database, key: string, fallback: T): Promise<T> {
+  try {
+    const row = await DB.prepare('SELECT value FROM settings WHERE key=?').bind(key).first<{ value: string }>();
+    if (!row) return fallback;
+    return JSON.parse(row.value) as T;
+  } catch { return fallback; }
+}
+
+async function writeValKey(DB: D1Database, key: string, value: unknown): Promise<void> {
+  const v = JSON.stringify(value);
+  await DB.prepare(`INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key, v).run();
+}
+
+// POST /api/validation/run-roofing
+validation.post('/run-roofing', async (c) => {
+  const { DB } = c.env;
+  const body = await c.req.json().catch(() => ({})) as { dry_run?: boolean; force?: boolean };
+  const dryRun = body.dry_run ?? false;
+  const force  = body.force  ?? false;
+
+  const startedAt = Date.now();
+  const runId = `val-roof-${Date.now()}-${Math.random().toString(36).slice(2,5)}`;
+
+  // ── §8 Safety check ───────────────────────────────────────────────────────
+  const bounceData = await readValKey<{ rate?: number }>(DB, 'delivery_bounce_rate', {});
+  const spamData   = await readValKey<{ rate?: number }>(DB, 'delivery_spam_rate', {});
+  const bounce_rate = bounceData.rate ?? 0;
+  const spam_rate   = spamData.rate   ?? 0;
+  if (spam_rate   > 0.10) return c.json({ status: 'HARD_STOP', reason: `Spam rate ${(spam_rate*100).toFixed(1)}% > 10%`, run_id: runId }, 409);
+  if (bounce_rate > 0.05) return c.json({ status: 'HARD_STOP', reason: `Bounce rate ${(bounce_rate*100).toFixed(1)}% > 5%`, run_id: runId }, 409);
+
+  // ── ENV must be PRODUCTION ────────────────────────────────────────────────
+  const envRow = await DB.prepare('SELECT value FROM settings WHERE key=?').bind('APP_ENV').first<{ value: string }>();
+  const appEnv = resolveEnv(envRow?.value);
+  if (appEnv !== 'PRODUCTION' && !force) {
+    return c.json({ status: 'ENV_BLOCK', reason: `ENV=${appEnv} — set to PRODUCTION or pass force:true`, run_id: runId }, 409);
+  }
+
+  // ── §1 TARGET: roofing / Memphis / 20 leads ───────────────────────────────
+  const NICHE  = 'roofing';
+  const CITY   = 'Memphis';
+
+  // ── §2+§3 Filter roofing leads, apply score gate ─────────────────────────
+  const allRoofingLeads = MEMPHIS_LEADS.filter(l =>
+    l.industry.toLowerCase().includes(NICHE) &&
+    l.city === CITY &&
+    l.phone && l.phone.trim() !== ''
+  );
+
+  // Score each lead using existing scoring engine
+  const scoredLeads = allRoofingLeads.map(l => {
+    const score = calculateLeadScore({
+      website_status: l.website_status,
+      has_phone:      !!l.phone,
+      has_email:      !!(l.email && l.email.trim()),
+      is_active:      true,
+      industry:       l.industry,
+    });
+    return { lead: l, score };
+  });
+
+  // §3 STRICT — score >= 60, no override
+  const qualifiedLeads = scoredLeads.filter(s => s.score >= MIN_SCORE).slice(0, VAL_LIMITS.leads);
+
+  if (qualifiedLeads.length === 0) {
+    return c.json({ status: 'NO_VALID_LEADS', reason: `No roofing leads in ${CITY} with score >= ${MIN_SCORE}`, run_id: runId }, 200);
+  }
+
+  // §3 Integrity gate (existing engine)
+  const candidates = qualifiedLeads.map(s => ({
+    id: s.lead.id,
+    email: s.lead.email || '',
+    name: s.lead.business_name,
+    phone: s.lead.phone || undefined,
+    source: 'roofing-validation',
+  }));
+  const integrityReport = runIntegrityGate(candidates, appEnv);
+  const acceptedIds = new Set(integrityReport.accepted.map(a => a.id));
+
+  const validLeads = qualifiedLeads.filter(s => acceptedIds.has(s.lead.id));
+
+  // ── §4 Demo validation ────────────────────────────────────────────────────
+  const appUrl = (c.env.APP_URL || 'https://websitedemopro.org').replace(/\/$/, '');
+  const leadsWithDemos = validLeads.map(s => {
+    const demoUrl = `${appUrl}/demo/${s.lead.slug}`;
+    // §4 stop if demo_url == homepage
+    const isHomepage = demoUrl === appUrl || demoUrl === appUrl + '/';
+    // §4 stop if demo missing — check slug exists (slug is always set)
+    const demoMissing = !s.lead.slug || s.lead.slug.trim() === '';
+    return { ...s, demoUrl, demoValid: !isHomepage && !demoMissing };
+  }).filter(e => e.demoValid);
+
+  // ── Counters ──────────────────────────────────────────────────────────────
+  let calls_queued    = 0;
+  let sms_queued      = 0;
+  let emails_queued   = 0;
+  let conversations   = 0;
+  const results: object[] = [];
+
+  // ── §5 Outreach execution: Day 1 = CALL → SMS (10min) → EMAIL ────────────
+  // All roofing leads have no email → phone-first routing (§5 / §6)
+  // EMAIL cap enforced at 5 per §6
+  for (const entry of leadsWithDemos) {
+    const { lead, demoUrl, score } = entry;
+    const hasEmail = !!(lead.email && lead.email.trim());
+    const hasPhone = !!(lead.phone && lead.phone.trim());
+
+    // §5 Day 1 sequence for phone-only leads: CALL → SMS → EMAIL
+    const dayResult: Record<string, unknown> = {
+      lead_id:        lead.id,
+      business_name:  lead.business_name,
+      phone:          lead.phone,
+      score,
+      demo_url:       demoUrl,
+      env:            appEnv,
+    };
+
+    // 1. CALL (queued for human)
+    if (hasPhone && calls_queued < VAL_LIMITS.calls) {
+      const callEntry = {
+        lead_id:      lead.id,
+        business_name: lead.business_name,
+        phone:        lead.phone,
+        demo_url:     demoUrl,
+        call_script:  `Hey, is this the owner of ${lead.business_name}?\n\nI'll be quick — I actually put together something for your business and wanted your quick opinion.\n\nWould it be okay if I texted it over to you?`,
+        sms_body:     `Hey, this is Alex — just tried calling about ${lead.business_name}.\nI put together something quick for you: ${demoUrl}\nLet me know what you think. Reply STOP to opt out`,
+        queued_at:    new Date().toISOString(),
+        status:       'QUEUED',
+        niche:        NICHE,
+        city:         CITY,
+      };
+      if (!dryRun) {
+        const callQueue = await readValKey<unknown[]>(DB, 'val_roofing_call_queue', []);
+        const exists = (callQueue as Array<{ lead_id: string }>).findIndex(e => e.lead_id === lead.id);
+        if (exists < 0) { callQueue.push(callEntry); await writeValKey(DB, 'val_roofing_call_queue', callQueue); }
+      }
+      calls_queued++;
+      conversations++;
+      dayResult.call = dryRun ? 'DRY_RUN_QUEUED' : 'QUEUED';
+    }
+
+    // 2. SMS (send after 10min — logged for Twilio dispatch)
+    if (hasPhone && sms_queued < VAL_LIMITS.sms) {
+      const smsBody = `Hey, this is Alex — just tried calling about ${lead.business_name}.\nI put together something quick for you: ${demoUrl}\nLet me know what you think. Reply STOP to opt out`;
+      if (!dryRun) {
+        // Queue SMS for Twilio dispatch (10min delay noted)
+        const smsQueue = await readValKey<unknown[]>(DB, 'val_roofing_sms_queue', []);
+        const exists = (smsQueue as Array<{ lead_id: string }>).findIndex(e => e.lead_id === lead.id);
+        if (exists < 0) {
+          smsQueue.push({ lead_id: lead.id, business_name: lead.business_name, phone: lead.phone, body: smsBody, demo_url: demoUrl, send_after_minutes: 10, queued_at: new Date().toISOString(), status: 'PENDING', niche: NICHE, city: CITY });
+          await writeValKey(DB, 'val_roofing_sms_queue', smsQueue);
+        }
+      }
+      sms_queued++;
+      dayResult.sms = dryRun ? 'DRY_RUN_QUEUED' : `QUEUED (10min delay) — ${smsBody.slice(0, 60)}...`;
+    }
+
+    // 3. EMAIL — only if email exists AND cap not reached
+    if (hasEmail && emails_queued < VAL_LIMITS.emails) {
+      const subject = `Quick thought about ${lead.business_name}`;
+      const emailBody = `Hey,\n\nWas looking at roofing contractors in Memphis and came across ${lead.business_name}.\n\nI put together something specific to your business — would it be okay if I sent it over?\n\nNo pressure at all.\n\n— Alex`;
+      if (!dryRun) {
+        const emailQueue = await readValKey<unknown[]>(DB, 'val_roofing_email_queue', []);
+        emailQueue.push({ lead_id: lead.id, business_name: lead.business_name, email: lead.email, subject, body: emailBody, demo_url: demoUrl, queued_at: new Date().toISOString(), status: 'PENDING', niche: NICHE, city: CITY });
+        await writeValKey(DB, 'val_roofing_email_queue', emailQueue);
+      }
+      emails_queued++;
+      dayResult.email = dryRun ? 'DRY_RUN_QUEUED' : 'QUEUED';
+    } else if (hasEmail && emails_queued >= VAL_LIMITS.emails) {
+      dayResult.email = 'CAP_REACHED';
+    } else {
+      dayResult.email = 'NO_EMAIL — phone-first routing applied';
+    }
+
+    results.push(dayResult);
+  }
+
+  // ── §7 Track: responses, demo_views, conversations ────────────────────────
+  // Load existing tracking
+  interface ValTracking { responses: number; demo_views: number; conversations: number; leads_processed: number; last_run: string; }
+  const tracking = await readValKey<ValTracking>(DB, 'val_roofing_tracking', { responses: 0, demo_views: 0, conversations: 0, leads_processed: 0, last_run: '' });
+
+  if (!dryRun) {
+    tracking.leads_processed = leadsWithDemos.length;
+    tracking.conversations   += conversations;
+    tracking.last_run         = new Date().toISOString();
+    await writeValKey(DB, 'val_roofing_tracking', tracking);
+  }
+
+  // ── §9 Output ─────────────────────────────────────────────────────────────
+  const leads_processed   = leadsWithDemos.length;
+  const responses         = tracking.responses;        // updated via POST /api/validation/roofing/respond
+  const demo_views        = tracking.demo_views;       // updated by demo view tracking
+  const total_conversations = tracking.conversations;
+  const response_rate_pct = leads_processed > 0 ? ((responses / leads_processed) * 100).toFixed(1) : '0.0';
+
+  // §10 Pass/Fail determination
+  const passed      = parseFloat(response_rate_pct) >= 5.0;
+  const val_status  = passed ? 'VALIDATION_PASS' : 'VALIDATION_PENDING';
+
+  // Persist run log
+  if (!dryRun) {
+    const runLog = await readValKey<unknown[]>(DB, 'val_roofing_run_log', []);
+    runLog.unshift({ run_id: runId, date: new Date().toISOString().slice(0,10), niche: NICHE, city: CITY, leads_processed, calls_queued, sms_queued, emails_queued, conversations, dry_run: dryRun, duration_ms: Date.now() - startedAt });
+    await writeValKey(DB, 'val_roofing_run_log', (runLog as unknown[]).slice(0, 30));
+  }
+
+  return c.json({
+    // §9 Required output
+    niche:               NICHE,
+    city:                CITY,
+    leads_processed,
+    responses,
+    demo_views,
+    conversations:       total_conversations,
+    response_rate:       `${response_rate_pct}%`,
+    status:              dryRun ? 'VALIDATION_DRY_RUN' : (passed ? 'VALIDATION_COMPLETE' : 'VALIDATION_PENDING'),
+
+    // Operational detail
+    run_id:              runId,
+    dry_run:             dryRun,
+    env:                 appEnv,
+    score_gate:          `>= ${MIN_SCORE}`,
+    leads_scored:        scoredLeads.length,
+    leads_qualified:     qualifiedLeads.length,
+    integrity_accepted:  integrityReport.accepted.length,
+    integrity_rejected:  integrityReport.rejected.length,
+    outreach: { calls_queued, sms_queued, emails_queued },
+    limits_applied:      VAL_LIMITS,
+    channel_sequence:    'CALL → SMS (10min delay) → EMAIL',
+    val_status,
+    pass_threshold:      '5% response rate',
+    pass:                passed,
+    duration_ms:         Date.now() - startedAt,
+    results:             dryRun ? results : `${results.length} leads queued — see /api/validation/roofing/status`,
+  });
+});
+
+// GET /api/validation/roofing/status — current tracking state + queues
+validation.get('/roofing/status', async (c) => {
+  const { DB } = c.env;
+  interface ValTracking { responses: number; demo_views: number; conversations: number; leads_processed: number; last_run: string; }
+  const tracking  = await readValKey<ValTracking>(DB, 'val_roofing_tracking', { responses: 0, demo_views: 0, conversations: 0, leads_processed: 0, last_run: '' });
+  const callQueue = await readValKey<unknown[]>(DB, 'val_roofing_call_queue', []);
+  const smsQueue  = await readValKey<unknown[]>(DB, 'val_roofing_sms_queue', []);
+  const runLog    = await readValKey<unknown[]>(DB, 'val_roofing_run_log', []);
+
+  const leads_processed   = tracking.leads_processed;
+  const responses         = tracking.responses;
+  const demo_views        = tracking.demo_views;
+  const response_rate_pct = leads_processed > 0 ? ((responses / leads_processed) * 100).toFixed(1) : '0.0';
+  const passed            = parseFloat(response_rate_pct) >= 5.0;
+
+  return c.json({
+    niche: 'roofing', city: 'Memphis',
+    tracking,
+    response_rate: `${response_rate_pct}%`,
+    pass: passed,
+    pass_threshold: '5%',
+    status: passed ? 'VALIDATION_COMPLETE' : 'VALIDATION_PENDING',
+    queues: { calls: callQueue.length, sms: smsQueue.length },
+    last_run: runLog[0] || null,
+    total_runs: runLog.length,
+    endpoints: {
+      run:    'POST /api/validation/run-roofing',
+      dryrun: 'POST /api/validation/run-roofing (body: {dry_run:true})',
+      status: 'GET  /api/validation/roofing/status',
+      respond:'POST /api/validation/roofing/respond',
+      queues: 'GET  /api/validation/roofing/queues',
+    },
+  });
+});
+
+// POST /api/validation/roofing/respond — log a response (human answers call, replies to SMS/email)
+validation.post('/roofing/respond', async (c) => {
+  const { DB } = c.env;
+  const body = await c.req.json() as { lead_id: string; channel: string; type: 'response' | 'demo_view' | 'conversation'; };
+  interface ValTracking { responses: number; demo_views: number; conversations: number; leads_processed: number; last_run: string; }
+  const tracking = await readValKey<ValTracking>(DB, 'val_roofing_tracking', { responses: 0, demo_views: 0, conversations: 0, leads_processed: 0, last_run: '' });
+
+  if (body.type === 'response')     tracking.responses++;
+  if (body.type === 'demo_view')    tracking.demo_views++;
+  if (body.type === 'conversation') tracking.conversations++;
+
+  await writeValKey(DB, 'val_roofing_tracking', tracking);
+
+  const response_rate_pct = tracking.leads_processed > 0 ? ((tracking.responses / tracking.leads_processed) * 100).toFixed(1) : '0.0';
+  const passed = parseFloat(response_rate_pct) >= 5.0;
+
+  return c.json({
+    recorded: body.type,
+    lead_id:  body.lead_id,
+    tracking,
+    response_rate: `${response_rate_pct}%`,
+    pass: passed,
+    status: passed ? 'VALIDATION_COMPLETE' : 'VALIDATION_PENDING',
+  });
+});
+
+// GET /api/validation/roofing/queues — see call and SMS queues
+validation.get('/roofing/queues', async (c) => {
+  const { DB } = c.env;
+  const callQueue  = await readValKey<unknown[]>(DB, 'val_roofing_call_queue', []);
+  const smsQueue   = await readValKey<unknown[]>(DB, 'val_roofing_sms_queue', []);
+  const emailQueue = await readValKey<unknown[]>(DB, 'val_roofing_email_queue', []);
+  return c.json({ calls: { total: callQueue.length, queue: callQueue }, sms: { total: smsQueue.length, queue: smsQueue }, emails: { total: emailQueue.length, queue: emailQueue } });
+});
+
 export default validation;

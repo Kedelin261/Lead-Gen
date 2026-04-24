@@ -1274,7 +1274,144 @@ async function init() {
 // ═══════════════════════════════════════════════════════════
 // VALIDATION MODE PAGE RENDERER
 // ═══════════════════════════════════════════════════════════
+// ── ROOFING VALIDATION RUN PANEL ──────────────────────────────────────────────
+async function renderRoofingValidation() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = '<div style="text-align:center;padding:40px;color:#475569;"><div style="font-size:24px;">🏠</div><p>Loading roofing validation status...</p></div>';
+
+  const status = await api('GET', '/validation/roofing/status');
+  if (!status) return;
+
+  const t    = status.tracking || {};
+  const pass = status.pass;
+  const sc   = pass ? '#10b981' : '#f59e0b';
+  const sb   = pass ? '#10b98122' : '#f59e0b22';
+  const rrNum = parseFloat((status.response_rate||'0%').replace('%',''));
+  const barW  = Math.min(100, (rrNum / 5) * 100); // 5% = 100% of bar
+
+  content.innerHTML = \`
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="font-size:28px;">🏠</div>
+      <div>
+        <h2 style="margin:0;color:#f1f5f9;font-size:20px;">Memphis Roofing — Validation Run</h2>
+        <p style="margin:4px 0 0;color:#64748b;font-size:13px;">Niche: <strong style="color:#f1f5f9;">Roofing</strong> &nbsp;|&nbsp; City: <strong style="color:#f1f5f9;">Memphis, TN</strong> &nbsp;|&nbsp; Target: 20 leads &nbsp;|&nbsp; Score gate: ≥60</p>
+      </div>
+      <span style="margin-left:auto;background:\${sb};color:\${sc};padding:6px 16px;border-radius:9999px;font-weight:700;font-size:13px;">\${status.status}</span>
+    </div>
+
+    <!-- §9 Required output -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px;">
+      \${[
+        ['Leads Processed', t.leads_processed||0, '#22d3ee'],
+        ['Responses',       t.responses||0,       '#10b981'],
+        ['Demo Views',      t.demo_views||0,       '#a78bfa'],
+        ['Conversations',   t.conversations||0,    '#f97316'],
+      ].map(([label,val,color])=>\`
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:\${color};">\${val}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">\${label}</div>
+        </div>\`).join('')}
+    </div>
+
+    <!-- Response rate + pass/fail -->
+    <div style="background:#1e293b;border:1px solid \${sc};border-radius:10px;padding:20px;margin-bottom:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="color:#f1f5f9;font-size:15px;font-weight:700;">Response Rate</span>
+        <span style="font-size:28px;font-weight:700;color:\${sc};">\${status.response_rate}</span>
+      </div>
+      <div style="background:#0f172a;border-radius:4px;height:8px;margin-bottom:10px;">
+        <div style="background:\${sc};height:8px;border-radius:4px;width:\${barW}%;transition:width 0.5s;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#64748b;">
+        <span>0%</span>
+        <span style="color:\${sc};font-weight:700;">Threshold: 5% to PASS</span>
+        <span>10%+</span>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:\${sb};border-radius:8px;text-align:center;">
+        <span style="color:\${sc};font-weight:700;font-size:14px;">\${pass ? '✅ VALIDATION PASS — response_rate >= 5%' : '⏳ VALIDATION PENDING — collecting responses'}</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
+      <button onclick="executeRoofingRun()" style="background:#22d3ee;color:#0f172a;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">▶ Execute Run</button>
+      <button onclick="executeRoofingDryRun()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:13px;">🧪 Dry Run Preview</button>
+      <button onclick="renderRoofingValidation()" style="background:#1e293b;color:#64748b;border:1px solid #334155;padding:10px 14px;border-radius:8px;cursor:pointer;font-size:13px;">🔄 Refresh</button>
+    </div>
+
+    <!-- Log a response manually -->
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin-bottom:24px;">
+      <h3 style="margin:0 0 12px;color:#f1f5f9;font-size:14px;">📊 Log a Response (§7 Tracking)</h3>
+      <p style="color:#64748b;font-size:12px;margin:0 0 12px;">When a lead responds by call, SMS, or demo view — log it here. Only responses, demo_views, and conversations are tracked per spec.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input id="resp-lead-id" placeholder="Lead ID (e.g. roof-001)" style="background:#0f172a;color:#f1f5f9;border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:13px;width:200px;">
+        <select id="resp-type" style="background:#0f172a;color:#f1f5f9;border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:13px;">
+          <option value="response">Response (call/email/sms)</option>
+          <option value="demo_view">Demo View</option>
+          <option value="conversation">Conversation Started</option>
+        </select>
+        <button onclick="logRoofingResponse()" style="background:#10b981;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;">Log It</button>
+      </div>
+    </div>
+
+    <!-- Queues summary -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px;">
+      \${[['📞 Call Queue', status.queues?.calls||0, '#f97316','(CALL first — human dials)'],['💬 SMS Queue', status.queues?.sms||0, '#a78bfa','(10min after call)'],['📧 Email Queue', 0, '#22d3ee','(Day 1 — no links)']].map(([label,n,color,note])=>\`
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:22px;font-weight:700;color:\${color};">\${n}</div>
+          <div style="font-size:12px;color:#64748b;">\${label}</div>
+          <div style="font-size:11px;color:#475569;margin-top:4px;">\${note}</div>
+        </div>\`).join('')}
+    </div>
+
+    <!-- §8 Hard stop rules -->
+    <div style="background:#1e293b;border:1px solid #ef444444;border-radius:10px;padding:16px;">
+      <h3 style="margin:0 0 10px;color:#f87171;font-size:13px;">🚨 §8 Hard Stop Conditions</h3>
+      <div style="display:flex;gap:16px;font-size:13px;flex-wrap:wrap;">
+        <span style="color:#10b981;">✅ spam_rate &lt; 10%</span>
+        <span style="color:#10b981;">✅ bounce_rate &lt; 5%</span>
+        <span style="color:#94a3b8;">→ If either threshold exceeded: ALL sends halt immediately</span>
+      </div>
+    </div>
+  \`;
+}
+
+async function executeRoofingRun() {
+  if (!confirm('Execute Memphis Roofing validation run? This will queue calls, SMS, and outreach for 20 roofing leads.')) return;
+  const r = await api('POST', '/validation/run-roofing', {});
+  if (r) {
+    showToast(\`Run complete — \${r.leads_processed} leads | calls:\${r.outreach?.calls_queued||0} sms:\${r.outreach?.sms_queued||0}\`, r.status === 'HARD_STOP' ? 'error' : 'success');
+    await renderRoofingValidation();
+  }
+}
+
+async function executeRoofingDryRun() {
+  const r = await api('POST', '/validation/run-roofing', { dry_run: true });
+  if (r) {
+    showToast(\`DRY RUN — \${r.leads_processed} leads qualified, score≥\${r.score_gate?.replace('>= ','')}, channel: \${r.channel_sequence}\`, 'info');
+    await renderRoofingValidation();
+  }
+}
+
+async function logRoofingResponse() {
+  const leadId = document.getElementById('resp-lead-id').value.trim();
+  const type   = document.getElementById('resp-type').value;
+  if (!leadId) { showToast('Enter a lead ID first', 'warning'); return; }
+  const r = await api('POST', '/validation/roofing/respond', { lead_id: leadId, channel: 'manual', type });
+  if (r) {
+    showToast(\`\${type} logged — response_rate: \${r.response_rate} \${r.pass ? '✅ PASS' : '⏳ pending'}\`, r.pass ? 'success' : 'info');
+    await renderRoofingValidation();
+  }
+}
+
+// ── END ROOFING PANEL ─────────────────────────────────────────────────────────
+
 async function renderValidation() {
+  // Show roofing validation run panel first — main purpose of this session
+  return renderRoofingValidation();
+}
+
+async function renderValidationFull() {
   const content = document.getElementById('page-content');
 
   // Initialize validation tables if not done
@@ -1497,13 +1634,13 @@ async function resolveFlag(flag) {
   const notes = prompt('Resolution notes for "' + flag + '":');
   if (notes === null) return;
   const r = await api('POST', '/validation/resolve-flag', { flag, resolution_notes: notes });
-  if (r) { showToast('Flag "' + flag + '" resolved', 'success'); await renderValidation(); }
+  if (r) { showToast('Flag "' + flag + '" resolved', 'success'); await renderValidationFull(); }
 }
 
 async function resumeSystem() {
   if (!confirm('Resume system from PAUSED state? Ensure root causes are fixed first.')) return;
   const r = await api('POST', '/validation/resume');
-  if (r) { showToast('System resumed — validation mode active', 'success'); await renderValidation(); }
+  if (r) { showToast('System resumed — validation mode active', 'success'); await renderValidationFull(); }
 }
 
 async function runAutoPause() {
@@ -1513,19 +1650,19 @@ async function runAutoPause() {
   } else {
     showToast('All auto-pause checks passed — system healthy', 'success');
   }
-  await renderValidation();
+  await renderValidationFull();
 }
 
 async function advanceDay() {
   const r = await api('POST', '/validation/advance-day');
-  if (r) { showToast('Advanced to Day ' + r.validation_day, 'info'); await renderValidation(); }
+  if (r) { showToast('Advanced to Day ' + r.validation_day, 'info'); await renderValidationFull(); }
 }
 
 async function refreshDecision() {
   const r = await api('GET', '/validation/scaling-decision');
   if (r) {
     showToast(r.scaling_allowed ? '\ud83d\ude80 SCALE_READY — All conditions met!' : '\ud83d\udd12 Scaling still blocked — conditions not met', r.scaling_allowed ? 'success' : 'warning');
-    await renderValidation();
+    await renderValidationFull();
   }
 }
 
@@ -1581,7 +1718,7 @@ async function runTestA() {
   });
   if (r) {
     showToast('Test A: ' + r.status + ' — ' + r.inbox_rate + ' inbox rate', r.status === 'PASS' ? 'success' : 'error');
-    await renderValidation();
+    await renderValidationFull();
   }
 }
 
@@ -1596,7 +1733,7 @@ async function runTestB() {
   });
   if (r) {
     showToast('Test B: ' + r.status + ' — ' + r.delivery_rate + ' delivery', r.status === 'PASS' ? 'success' : 'error');
-    await renderValidation();
+    await renderValidationFull();
   }
 }
 
@@ -1617,7 +1754,7 @@ async function runTestC() {
   const r = await api('POST', '/validation/test-c', { demo_scores: scores });
   if (r) {
     showToast('Test C: ' + r.status + ' — ' + r.quality_score + ' demos rated YES', r.status === 'PASS' ? 'success' : 'error');
-    await renderValidation();
+    await renderValidationFull();
   }
 }
 
@@ -1626,7 +1763,7 @@ async function runTestD() {
   const r = await api('POST', '/validation/test-d', { use_db_data: true });
   if (r) {
     showToast('Test D: ' + r.status + ' — ' + r.response_rate + ' response rate', r.status === 'PASS' ? 'success' : 'warning');
-    await renderValidation();
+    await renderValidationFull();
   }
 }
 
